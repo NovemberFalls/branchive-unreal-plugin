@@ -2,10 +2,90 @@
 #include "LoreCli.h"
 
 #include "BranchiveSourceControlLog.h"
+#include "LoreBinaryResolve.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformMisc.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
+
+#include <string>
+
+namespace
+{
+	// True iff Candidate contains a path separator (i.e. it's a path, not a bare leaf name).
+	bool HasPathSeparator(const FString& S)
+	{
+		return S.Contains(TEXT("/")) || S.Contains(TEXT("\\"));
+	}
+
+	// Resolve a candidate to an ABSOLUTE, existing file — or empty on failure (F-BIN).
+	//  * A path (has a separator): normalise to absolute; require it to exist as a file.
+	//  * A bare leaf name: search PATH and the known default install dir; NEVER return the
+	//    bare name (a bare name could resolve against the spawn cwd = a workspace).
+	FString ResolveExecutableCandidate(const FString& Candidate)
+	{
+		if (Candidate.IsEmpty())
+		{
+			return FString();
+		}
+
+		if (HasPathSeparator(Candidate))
+		{
+			const FString Full = FPaths::ConvertRelativePathToFull(Candidate);
+			if (!FPaths::IsRelative(Full) && FPaths::FileExists(Full))
+			{
+				return Full;
+			}
+			return FString();
+		}
+
+		// Bare leaf name -> search directories. Build the candidate leaf names first.
+		TArray<FString> Leaves;
+		Leaves.Add(Candidate);
+#if PLATFORM_WINDOWS
+		if (!Candidate.EndsWith(TEXT(".exe"), ESearchCase::IgnoreCase))
+		{
+			Leaves.Add(Candidate + TEXT(".exe"));
+		}
+#endif
+
+		// Directories to search, in order: every PATH entry, then the known default
+		// install dir(s).
+		TArray<FString> Dirs;
+		const FString PathEnv = FPlatformMisc::GetEnvironmentVariable(TEXT("PATH"));
+		if (!PathEnv.IsEmpty())
+		{
+#if PLATFORM_WINDOWS
+			const TCHAR* const Sep = TEXT(";");
+#else
+			const TCHAR* const Sep = TEXT(":");
+#endif
+			PathEnv.ParseIntoArray(Dirs, Sep, /*InCullEmpty=*/true);
+		}
+#if PLATFORM_WINDOWS
+		// Branchive Desktop's documented default lore.exe location (README / QA setup).
+		Dirs.Add(TEXT("D:\\Lore\\bin"));
+#endif
+
+		for (FString Dir : Dirs)
+		{
+			Dir = Dir.TrimStartAndEnd().TrimQuotes();
+			if (Dir.IsEmpty())
+			{
+				continue;
+			}
+			for (const FString& Leaf : Leaves)
+			{
+				const FString Full = FPaths::ConvertRelativePathToFull(FPaths::Combine(Dir, Leaf));
+				if (!FPaths::IsRelative(Full) && FPaths::FileExists(Full))
+				{
+					return Full;
+				}
+			}
+		}
+		return FString();
+	}
+}
 
 FString FLoreCliResult::Combined() const
 {
@@ -73,27 +153,51 @@ FString FLoreCli::QuoteArg(const FString& Arg)
 
 FString FLoreCli::ResolveBinaryPath(const FString& ConfiguredPath)
 {
+	// F-BIN: resolve to an ABSOLUTE, existing file or FAIL (empty). A bare/relative name
+	// must never reach FPlatformProcess::ExecProcess with cwd = a workspace directory.
+	// Priority: explicit plugin setting -> LORE_BIN env (§3.3) -> a bare name searched on
+	// PATH + the known default install dir. In EVERY branch the result is an absolute path
+	// to an existing file, or empty (which FLoreCli::Run then refuses to spawn).
 	if (!ConfiguredPath.IsEmpty())
 	{
-		return ConfiguredPath;
+		return ResolveExecutableCandidate(ConfiguredPath);
 	}
-	// LORE_BIN — the reference implementation's own override convention (§3.3).
 	const FString EnvBin = FPlatformMisc::GetEnvironmentVariable(TEXT("LORE_BIN"));
 	if (!EnvBin.IsEmpty())
 	{
-		return EnvBin;
+		return ResolveExecutableCandidate(EnvBin);
 	}
-	// Fall back to a bare name resolved via PATH.
 #if PLATFORM_WINDOWS
-	return TEXT("lore.exe");
+	return ResolveExecutableCandidate(TEXT("lore.exe"));
 #else
-	return TEXT("lore");
+	return ResolveExecutableCandidate(TEXT("lore"));
 #endif
 }
 
 FLoreCliResult FLoreCli::Run(const TArray<FString>& Args, bool bAppendRepository) const
 {
 	FLoreCliResult Result;
+
+	// F-BIN: REFUSE to spawn unless the binary is an ABSOLUTE path to an existing file.
+	// FPlatformProcess::ExecProcess runs with cwd = RepoPath (a workspace), and on Windows
+	// a bare/relative image name can resolve against that cwd BEFORE PATH — a hostile repo
+	// committing a `lore.exe` at its root would then run with the user's Lore JWT on the
+	// command line. This refusal is unconditional and therefore also guards the
+	// JWT-bearing `lore login` invocation.
+	if (BinaryPath.IsEmpty()
+		|| !BranchiveLore::IsAbsoluteBinaryPath(std::string(TCHAR_TO_UTF8(*BinaryPath)))
+		|| !FPaths::FileExists(BinaryPath))
+	{
+		Result.bSpawnFailed = true;
+		Result.ReturnCode = -1;
+		Result.StdErr = FString::Printf(
+			TEXT("Refusing to launch lore: '%s' is not an absolute path to an existing file."), *BinaryPath);
+		UE_LOG(LogBranchiveSourceControl, Error,
+			TEXT("Branchive: refusing to launch the lore binary — resolved path '%s' is not an absolute, existing file. ")
+			TEXT("Set an absolute path in Revision Control settings or via the LORE_BIN environment variable."),
+			*BinaryPath);
+		return Result;
+	}
 
 	// Build the argv, appending "--repository <abs path>" last (§3.2).
 	TArray<FString> FullArgs = Args;
@@ -113,7 +217,41 @@ FLoreCliResult FLoreCli::Run(const TArray<FString>& Args, bool bAppendRepository
 
 	const FString Cwd = RepoPath.IsEmpty() ? FString() : RepoPath;
 
-	UE_LOG(LogBranchiveSourceControl, Verbose, TEXT("lore %s (cwd=%s)"), *Params, *Cwd);
+	// F-LOG: build a REDACTED command line for the log. The real argv (Params, above) is
+	// unchanged — only this log string is sanitized. Any value following a secret-bearing
+	// flag (`--token <JWT>`, `--auth-url <url>`) becomes "<redacted>", and an inline
+	// "--flag=value" form is redacted after the '='. This keeps the login JWT out of logs.
+	auto IsSecretFlag = [](const FString& A) -> bool
+	{
+		return A.Equals(TEXT("--token"), ESearchCase::IgnoreCase)
+			|| A.Equals(TEXT("--auth-url"), ESearchCase::IgnoreCase);
+	};
+	FString RedactedLog;
+	bool bRedactNextValue = false;
+	for (int32 i = 0; i < FullArgs.Num(); ++i)
+	{
+		if (i > 0) { RedactedLog += TEXT(" "); }
+		const FString& A = FullArgs[i];
+		if (bRedactNextValue)
+		{
+			RedactedLog += TEXT("<redacted>");
+			bRedactNextValue = false;
+			continue;
+		}
+		FString Flag, Value;
+		if (A.Split(TEXT("="), &Flag, &Value) && IsSecretFlag(Flag))
+		{
+			RedactedLog += Flag + TEXT("=<redacted>");
+			continue;
+		}
+		RedactedLog += A;
+		if (IsSecretFlag(A))
+		{
+			bRedactNextValue = true;
+		}
+	}
+
+	UE_LOG(LogBranchiveSourceControl, Verbose, TEXT("lore %s (cwd=%s)"), *RedactedLog, *Cwd);
 
 	int32 ReturnCode = -1;
 	FString OutStd, OutErr;

@@ -8,3 +8,9 @@ DerivedDataCache/
 # Packaged plugin output (RunUAT BuildPlugin -Package=...) lands outside the repo,
 # but guard against an in-tree package dir too.
 Package/
+
+# Standalone unit-test build artifacts (parser_test / auth_test).
+Tests/standalone/*.exe
+Tests/standalone/*.obj
+Tests/standalone/*.pdb
+Tests/standalone/*.ilk

@@ -57,42 +57,77 @@ namespace BranchiveLore
 	inline const char* BranchiveCloudHost() { return "vcs.branchive.io"; }
 
 	// ---------------------------------------------------------------------------
-	// SECURITY-CRITICAL, MUST-REPLICATE (auth spec §4.0, zara H1).
+	// SECURITY-CRITICAL, MUST-REPLICATE (auth spec §4.0, zara H1 + F1).
 	//
 	// EXACT-HOST match against the known Branchive Cloud host. Never endsWith,
-	// never includes/substring, never an unanchored regex. This is what prevents
+	// never includes/substring, never a `:`-stopping regex. This is what prevents
 	// the plugin from ever handing a real, victim-identity JWT to whatever server
 	// a (possibly hostile) workspace's .lore/config.toml remote_url points at.
 	//
-	// Returns true ONLY when remoteUrl is lore://<CloudHost>[:port][/...].
-	// A false result means: do NOTHING auth-related (self-hosted / local / hostile).
+	// AUTHORITY-AWARE PARSE (F1 — the parser differential zara caught on the
+	// JetBrains side; do NOT reintroduce it here). We capture the FULL RFC-3986
+	// authority: everything between "lore://" and the first '/'. Then:
+	//   * if the authority contains '@' (userinfo) -> REJECT outright.
+	//     The lore CLI dials Url::host_str(), so `lore://vcs.branchive.io:41337@evil.com`
+	//     really dials evil.com. A ':'-stopping capture would read `vcs.branchive.io`
+	//     and WRONGLY pass the gate — handing the victim JWT to evil.com. A genuine
+	//     Branchive Cloud remote never carries userinfo, so any '@' is hostile: fail closed.
+	//   * otherwise host = authority up to the first ':' (drop any :port), lowercased,
+	//     EXACT (case-insensitive) equality against CloudHost. Fail closed on empty.
+	//
+	// Returns true ONLY when RemoteUrl is lore://<CloudHost>[:port][/...] with no
+	// userinfo. A false result means: do NOTHING auth-related (self-hosted / local
+	// / hostile) — no POST /auth/lore-token, no `lore login`.
 	// ---------------------------------------------------------------------------
 	inline bool IsCloudRemoteUrl(const std::string& RemoteUrl, const std::string& CloudHost)
 	{
-		// Parse the host out of lore://HOST[:port][/...], case-insensitively.
-		// Mirrors Desktop's /^lore:\/\/([^/:]+)/i then exact lowercase compare.
+		// Fail closed on an empty configured cloud host.
+		std::string Want;
+		for (char c : CloudHost)
+		{
+			if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue; // trim whitespace
+			if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+			Want.push_back(c);
+		}
+		if (Want.empty()) return false;
+
+		// Case-insensitive scheme check for the literal "lore://".
 		const std::string Scheme = "lore://";
 		if (RemoteUrl.size() < Scheme.size()) return false;
-		// case-insensitive scheme check
 		for (size_t i = 0; i < Scheme.size(); ++i)
 		{
 			char a = RemoteUrl[i];
 			if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
 			if (a != Scheme[i]) return false;
 		}
-		std::string Host;
+
+		// Capture the FULL authority: everything up to the first '/'. We do NOT stop
+		// at ':' here — the whole authority (userinfo + host + port) must be visible so
+		// a `userinfo@host` smuggle cannot slip past the '@' check below. A newline in
+		// a remote_url is impossible; if one appears, it rides into the authority and
+		// fails the exact host compare (fail closed).
+		std::string Authority;
 		for (size_t i = Scheme.size(); i < RemoteUrl.size(); ++i)
 		{
-			char c = RemoteUrl[i];
-			if (c == '/' || c == ':') break;
+			const char c = RemoteUrl[i];
+			if (c == '/') break;
+			Authority.push_back(c);
+		}
+
+		// Userinfo present => the CLI dials whatever host follows '@', not what a
+		// ':'-stopped capture sees. A Branchive Cloud URL never carries userinfo: REJECT.
+		for (char c : Authority)
+		{
+			if (c == '@') return false;
+		}
+
+		// No userinfo: host = authority up to the first ':' (drop any :port), lowercased.
+		std::string Host;
+		for (char c : Authority)
+		{
+			if (c == ':') break;
 			if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
 			Host.push_back(c);
-		}
-		std::string Want;
-		for (char c : CloudHost)
-		{
-			if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-			Want.push_back(c);
 		}
 		return !Host.empty() && Host == Want; // EXACT host equality
 	}

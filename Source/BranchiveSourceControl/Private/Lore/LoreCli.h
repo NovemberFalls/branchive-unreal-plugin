@@ -44,9 +44,10 @@ public:
 	const FString& GetRepoPath() const { return RepoPath; }
 
 	/**
-	 * Resolve the lore binary path: explicit setting -> LORE_BIN env ->
-	 * bare "lore"/"lore.exe" on PATH. Returns the best candidate (may be a bare
-	 * name if nothing else is configured).
+	 * Resolve the lore binary path: explicit setting -> LORE_BIN env -> "lore"/"lore.exe"
+	 * searched on PATH + the known default install dir. ALWAYS returns an ABSOLUTE path to
+	 * an existing file, or EMPTY on failure — NEVER a bare/relative name (F-BIN). An empty
+	 * result causes FLoreCli::Run to refuse to spawn.
 	 */
 	static FString ResolveBinaryPath(const FString& ConfiguredPath);
 

@@ -2,9 +2,12 @@
 #include "BranchiveSourceControlModule.h"
 
 #include "BranchiveSourceControlLog.h"
+#include "BranchiveSourceControlMenu.h"
 #include "BranchiveSourceControlOperations.h"
+#include "Cloud/BranchiveCloudAuth.h"
 #include "Features/IModularFeatures.h"
 #include "Misc/App.h"
+#include "Misc/CoreDelegates.h"
 #include "Modules/ModuleManager.h"
 
 DEFINE_LOG_CATEGORY(LogBranchiveSourceControl);
@@ -40,13 +43,51 @@ void FBranchiveSourceControlModule::StartupModule()
 	// Revision Control provider dropdown (contract / UEPlasticPlugin pattern).
 	IModularFeatures::Get().RegisterModularFeature("SourceControl", &Provider);
 
+	// Branchive Cloud sign-in service (auth spec). Created here; the conflict menu
+	// registration + prior-session restore are deferred to post-engine-init (the
+	// content browser / Slate are not ready this early).
+	CloudAuth = new FBranchiveCloudAuth();
+	ConflictMenu = new FBranchiveSourceControlMenu();
+	PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddRaw(this, &FBranchiveSourceControlModule::OnPostEngineInit);
+
 	UE_LOG(LogBranchiveSourceControl, Log, TEXT("Branchive source control module started (contract 2.0.0)."));
+}
+
+void FBranchiveSourceControlModule::OnPostEngineInit()
+{
+	if (ConflictMenu)
+	{
+		ConflictMenu->Register();
+	}
+	if (CloudAuth)
+	{
+		CloudAuth->RestoreOnStartup();
+	}
 }
 
 void FBranchiveSourceControlModule::ShutdownModule()
 {
+	if (PostEngineInitHandle.IsValid())
+	{
+		FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
+		PostEngineInitHandle.Reset();
+	}
+
+	if (ConflictMenu)
+	{
+		ConflictMenu->Unregister();
+		delete ConflictMenu;
+		ConflictMenu = nullptr;
+	}
+
 	Provider.Close();
 	IModularFeatures::Get().UnregisterModularFeature("SourceControl", &Provider);
+
+	if (CloudAuth)
+	{
+		delete CloudAuth; // dtor cancels the refresh timer + clears the static accessor
+		CloudAuth = nullptr;
+	}
 }
 
 void FBranchiveSourceControlModule::SaveSettings()

@@ -7,6 +7,7 @@
 #include "BranchiveSourceControlModule.h"
 #include "BranchiveSourceControlProvider.h"
 #include "BranchiveSourceControlRevision.h"
+#include "Cloud/BranchiveCloudAuth.h"
 #include "Lore/LoreCli.h"
 #include "Lore/LoreParse.h"
 #include "Lore/LoreErrors.h"
@@ -29,6 +30,20 @@ namespace
 	std::string ToU8(const FString& S)
 	{
 		return std::string(TCHAR_TO_UTF8(*S));
+	}
+
+	// §4: before a remote-dialing op, refresh the Lore JWT for THIS op's remote — but
+	// ONLY behind the §4.0 exact-host cloud gate (inside EnsureCloudAuth). A no-op
+	// unless the user is signed in to Branchive Cloud AND this workspace's remote is
+	// the cloud host; a self-hosted / local / hostile remote gets a hard no-op, and a
+	// signed-out user falls back to the CLI's ambient auth. Best-effort — never breaks
+	// the op. Runs on the worker thread, serialized by the workspace mutex the caller holds.
+	void MaybeEnsureCloudAuth(FBranchiveSourceControlCommand& Command)
+	{
+		if (FBranchiveCloudAuth* Cloud = FBranchiveCloudAuth::Get())
+		{
+			Cloud->EnsureCloudAuth(Command.RemoteUrl, Command.PathToRepositoryRoot);
+		}
 	}
 
 	FString NormalizeRel(const FString& In)
@@ -340,6 +355,7 @@ bool FBranchiveSourceControlWorkerBase::UpdateStates() const
 bool FBranchiveConnectWorker::Execute(FBranchiveSourceControlCommand& Command)
 {
 	FScopeLock Lock(MutexFor(Command));
+	MaybeEnsureCloudAuth(Command);
 	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
 
 	// Verify the workspace responds. A raw TCP pre-flight to the lore:// port
@@ -391,6 +407,7 @@ bool FBranchiveCheckOutWorker::Execute(FBranchiveSourceControlCommand& Command)
 	{
 		return true; // nothing to check out
 	}
+	MaybeEnsureCloudAuth(Command);
 	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
 
 	// CheckOut == lock acquire (contract §5.3 / §4.15).
@@ -420,6 +437,7 @@ bool FBranchiveCheckOutWorker::Execute(FBranchiveSourceControlCommand& Command)
 bool FBranchiveCheckInWorker::Execute(FBranchiveSourceControlCommand& Command)
 {
 	FScopeLock Lock(MutexFor(Command));
+	MaybeEnsureCloudAuth(Command);
 	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
 
 	// ---- 1. stage the exact files being checked in (explicit list, §5.3) ----
@@ -657,6 +675,7 @@ bool FBranchiveRevertWorker::Execute(FBranchiveSourceControlCommand& Command)
 bool FBranchiveSyncWorker::Execute(FBranchiveSourceControlCommand& Command)
 {
 	FScopeLock Lock(MutexFor(Command));
+	MaybeEnsureCloudAuth(Command);
 	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
 
 	// UE Sync = pull = bare `lore sync` (no revision argument) — contract §5.3 / §4.6.

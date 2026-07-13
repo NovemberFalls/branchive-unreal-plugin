@@ -2,9 +2,11 @@
 #include "SBranchiveSourceControlSettings.h"
 
 #include "BranchiveSourceControlModule.h"
+#include "Cloud/BranchiveCloudAuth.h"
 #include "Modules/ModuleManager.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SGridPanel.h"
 
@@ -74,8 +76,102 @@ void SBranchiveSourceControlSettings::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock).Text(this, &SBranchiveSourceControlSettings::GetContractText)
 			]
+
+			// Row 5: Branchive Cloud sign-in status (read-only, live).
+			+ SGridPanel::Slot(0, 5).Padding(Pad).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock).Text(LOCTEXT("CloudLabel", "Branchive Cloud"))
+			]
+			+ SGridPanel::Slot(1, 5).Padding(Pad).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock).Text(this, &SBranchiveSourceControlSettings::GetCloudStatusText)
+			]
+
+			// Row 6: sign-in server (read-only).
+			+ SGridPanel::Slot(0, 6).Padding(Pad).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock).Text(LOCTEXT("CloudServerLabel", "Sign-in server"))
+			]
+			+ SGridPanel::Slot(1, 6).Padding(Pad).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock).Text(this, &SBranchiveSourceControlSettings::GetCloudServerText)
+			]
+
+			// Row 7: the Sign in / Sign out button (user-initiated — §0/§3.4).
+			+ SGridPanel::Slot(1, 7).Padding(Pad).HAlign(HAlign_Left)
+			[
+				SNew(SButton)
+				.Text(this, &SBranchiveSourceControlSettings::GetSignInButtonText)
+				.IsEnabled(this, &SBranchiveSourceControlSettings::IsSignInButtonEnabled)
+				.OnClicked(this, &SBranchiveSourceControlSettings::OnSignInOutClicked)
+				.ToolTipText(LOCTEXT("CloudSignInTooltip", "Sign in to Branchive Cloud in your web browser (PKCE). Not required for a self-hosted or local-only workspace."))
+			]
 		]
 	];
+}
+
+FText SBranchiveSourceControlSettings::GetCloudStatusText() const
+{
+	FBranchiveCloudAuth* Cloud = FBranchiveCloudAuth::Get();
+	if (!Cloud)
+	{
+		return LOCTEXT("CloudUnavailable", "(unavailable)");
+	}
+	if (!Cloud->IsSignedIn())
+	{
+		return LOCTEXT("CloudSignedOut", "Signed out");
+	}
+	const FString Label = Cloud->IdentityLabel();
+	FText Base = Label.IsEmpty()
+		? LOCTEXT("CloudSignedIn", "Signed in")
+		: FText::Format(LOCTEXT("CloudSignedInAs", "Signed in as {0}"), FText::FromString(Label));
+	if (!Cloud->IsTokenPersistent())
+	{
+		return FText::Format(
+			LOCTEXT("CloudSignedInNonPersistent", "{0}  (session not persisted on this platform — re-auth next session)"),
+			Base);
+	}
+	return Base;
+}
+
+FText SBranchiveSourceControlSettings::GetCloudServerText() const
+{
+	if (FBranchiveCloudAuth* Cloud = FBranchiveCloudAuth::Get())
+	{
+		return FText::FromString(Cloud->BffBaseUrl());
+	}
+	return FText::GetEmpty();
+}
+
+FText SBranchiveSourceControlSettings::GetSignInButtonText() const
+{
+	FBranchiveCloudAuth* Cloud = FBranchiveCloudAuth::Get();
+	if (Cloud && Cloud->IsSignedIn())
+	{
+		return LOCTEXT("CloudSignOutBtn", "Sign out of Branchive");
+	}
+	return LOCTEXT("CloudSignInBtn", "Sign in to Branchive");
+}
+
+bool SBranchiveSourceControlSettings::IsSignInButtonEnabled() const
+{
+	return FBranchiveCloudAuth::Get() != nullptr;
+}
+
+FReply SBranchiveSourceControlSettings::OnSignInOutClicked()
+{
+	if (FBranchiveCloudAuth* Cloud = FBranchiveCloudAuth::Get())
+	{
+		if (Cloud->IsSignedIn())
+		{
+			Cloud->SignOut();
+		}
+		else
+		{
+			Cloud->SignInAsync();
+		}
+	}
+	return FReply::Handled();
 }
 
 FText SBranchiveSourceControlSettings::GetBinaryPathText() const

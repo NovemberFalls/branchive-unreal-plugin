@@ -13,6 +13,9 @@
 #include "BranchiveSourceControlProvider.h"
 #include "BranchiveSourceControlSettings.h"
 
+class FBranchiveCloudAuth;
+class FBranchiveSourceControlMenu;
+
 class FBranchiveSourceControlModule : public IModuleInterface
 {
 public:
@@ -25,10 +28,22 @@ public:
 
 	FBranchiveSourceControlProvider& GetProvider() { return Provider; }
 
+	/** The cloud sign-in service (may be null before startup / after shutdown). */
+	FBranchiveCloudAuth* GetCloudAuth() const { return CloudAuth; }
+
 	/** Convenience accessor (may return nullptr if the module is not loaded). */
 	static FBranchiveSourceControlModule* GetThreadSafe();
 
 private:
+	/** Deferred to post-engine-init: register the conflict menu + restore a prior sign-in. */
+	void OnPostEngineInit();
+
 	FBranchiveSourceControlProvider Provider;
 	FBranchiveSourceControlSettings Settings;
+
+	// Raw-owned (deleted in ShutdownModule where the full types are visible).
+	FBranchiveCloudAuth* CloudAuth = nullptr;
+	FBranchiveSourceControlMenu* ConflictMenu = nullptr;
+
+	FDelegateHandle PostEngineInitHandle;
 };
