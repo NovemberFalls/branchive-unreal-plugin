@@ -2,9 +2,11 @@
 #include "BranchiveSourceControlOperations.h"
 
 #include "BranchiveSourceControlCommand.h"
+#include "BranchiveSourceControlConflictOperations.h"
 #include "BranchiveSourceControlLog.h"
 #include "BranchiveSourceControlModule.h"
 #include "BranchiveSourceControlProvider.h"
+#include "BranchiveSourceControlRevision.h"
 #include "Lore/LoreCli.h"
 #include "Lore/LoreParse.h"
 #include "Lore/LoreErrors.h"
@@ -57,6 +59,60 @@ namespace
 		case 'M': return EBranchiveWorkingCopyState::Modified;
 		default:  return EBranchiveWorkingCopyState::Modified;
 		}
+	}
+
+	// Map a file-history status code to a human action string for UE's column.
+	FString CodeToAction(char Code)
+	{
+		switch (Code)
+		{
+		case 'A': return TEXT("add");
+		case 'M': return TEXT("edit");
+		case 'D': return TEXT("delete");
+		case 'R': return TEXT("rename");
+		case 'C': return TEXT("copy");
+		default:  return FString();
+		}
+	}
+
+	// Parse Lore's RFC-2822-ish date ("Sun, 28 Jun 2026 10:24:06 +0000"). The
+	// offset is treated as UTC (fixtures are all +0000). Returns FDateTime(0) on
+	// failure — never throws.
+	FDateTime ParseLoreDate(const FString& In)
+	{
+		FString S = In.TrimStartAndEnd();
+		int32 Comma;
+		if (S.FindChar(TEXT(','), Comma)) { S = S.Mid(Comma + 1).TrimStartAndEnd(); }
+
+		TArray<FString> Tok;
+		S.ParseIntoArray(Tok, TEXT(" "), /*CullEmpty=*/true);
+		if (Tok.Num() < 4) { return FDateTime(0); }
+
+		const int32 Day = FCString::Atoi(*Tok[0]);
+		static const TCHAR* Months[] = { TEXT("Jan"), TEXT("Feb"), TEXT("Mar"), TEXT("Apr"),
+			TEXT("May"), TEXT("Jun"), TEXT("Jul"), TEXT("Aug"), TEXT("Sep"), TEXT("Oct"),
+			TEXT("Nov"), TEXT("Dec") };
+		int32 Month = 0;
+		for (int32 i = 0; i < 12; ++i) { if (Tok[1].StartsWith(Months[i])) { Month = i + 1; break; } }
+		const int32 Year = FCString::Atoi(*Tok[2]);
+
+		int32 Hour = 0, Min = 0, Sec = 0;
+		if (Tok.Num() >= 4)
+		{
+			TArray<FString> HMS;
+			Tok[3].ParseIntoArray(HMS, TEXT(":"), true);
+			if (HMS.Num() >= 1) { Hour = FCString::Atoi(*HMS[0]); }
+			if (HMS.Num() >= 2) { Min  = FCString::Atoi(*HMS[1]); }
+			if (HMS.Num() >= 3) { Sec  = FCString::Atoi(*HMS[2]); }
+		}
+
+		// Validate BEFORE constructing — FDateTime's (Y,M,D,...) ctor check()s its
+		// args and would assert on malformed input.
+		if (!FDateTime::Validate(Year, Month, Day, Hour, Min, Sec, 0))
+		{
+			return FDateTime(0);
+		}
+		return FDateTime(Year, Month, Day, Hour, Min, Sec);
 	}
 
 	// Fallback mutex so a worker never dereferences a null WorkspaceMutex.
@@ -189,6 +245,48 @@ namespace
 		}
 		return true;
 	}
+
+	// Run `lore file history <absFile>` for each file and build newest-first
+	// FBranchiveSourceControlRevision lists (contract §4.12). A per-file failure is
+	// non-fatal: that file simply gets no history (never a fabricated entry).
+	void ComputeHistory(const FLoreCli& Cli, const TArray<FString>& Files,
+	                    TMap<FString, TArray<FBranchiveSourceControlRevisionRef>>& OutHistory)
+	{
+		for (const FString& Abs : Files)
+		{
+			const FLoreCliResult Res = Cli.Run({ TEXT("file"), TEXT("history"), Abs });
+			if (!Res.Ok())
+			{
+				continue; // e.g. file never tracked — no history, no error banner
+			}
+
+			const std::vector<BranchiveLore::FFileRevisionEntry> Entries =
+				BranchiveLore::ParseFileHistory(ToU8(Res.StdOut));
+
+			TArray<FBranchiveSourceControlRevisionRef> Revs;
+			Revs.Reserve((int32)Entries.size());
+			for (const BranchiveLore::FFileRevisionEntry& E : Entries)
+			{
+				TSharedRef<FBranchiveSourceControlRevision, ESPMode::ThreadSafe> Rev =
+					MakeShared<FBranchiveSourceControlRevision, ESPMode::ThreadSafe>();
+				Rev->Filename = Abs;
+				Rev->RevisionNumber = (int32)E.Revision;
+				Rev->FullSignature = ToF(E.Signature);
+				// Short label = revision number (stable, human-facing). The full hex
+				// is preserved on FullSignature for `file diff --source`.
+				Rev->ShortRevision = FString::Printf(TEXT("%lld"), E.Revision);
+				Rev->Description = ToF(E.Message);
+				Rev->UserName = FString();   // NEVER fabricate an author (contract §4.12 rule 5)
+				Rev->ClientSpec = FString();
+				Rev->Action = CodeToAction(E.Code);
+				Rev->Date = ParseLoreDate(ToF(E.Date));
+				Rev->PathToLoreBinary = Cli.GetBinaryPath();
+				Rev->PathToRepositoryRoot = Cli.GetRepoPath();
+				Revs.Add(Rev);
+			}
+			OutHistory.Add(Abs, MoveTemp(Revs));
+		}
+	}
 }
 
 // ----------------------------------------------------------- base UpdateStates
@@ -227,7 +325,15 @@ bool FBranchiveSourceControlWorkerBase::UpdateStates() const
 		State->TimeStamp = FDateTime::Now();
 	}
 
-	return States.Num() > 0 || AcquiredLocks.Num() > 0 || ReleasedLocks.Num() > 0;
+	// Apply any freshly-fetched history (contract §4.12).
+	for (const TPair<FString, TArray<FBranchiveSourceControlRevisionRef>>& Pair : HistoryByFile)
+	{
+		TSharedRef<FBranchiveSourceControlState, ESPMode::ThreadSafe> State = Provider.GetStateInternal(Pair.Key);
+		State->History = Pair.Value;
+		State->TimeStamp = FDateTime::Now();
+	}
+
+	return States.Num() > 0 || AcquiredLocks.Num() > 0 || ReleasedLocks.Num() > 0 || HistoryByFile.Num() > 0;
 }
 
 // ------------------------------------------------------------------ Connect
@@ -261,6 +367,18 @@ bool FBranchiveUpdateStatusWorker::Execute(FBranchiveSourceControlCommand& Comma
 	if (!bOk)
 	{
 		Command.ErrorMessages.Add(Error);
+	}
+
+	// History-capable path: when the editor requests history (Content Browser ->
+	// Revision Control -> History, which runs FUpdateStatus with SetUpdateHistory
+	// (true)), populate each file's revision list from `lore file history` (§4.12).
+	if (bOk && Command.Operation->GetName() == "UpdateStatus")
+	{
+		TSharedRef<FUpdateStatus, ESPMode::ThreadSafe> Op = StaticCastSharedRef<FUpdateStatus>(Command.Operation);
+		if (Op->ShouldUpdateHistory())
+		{
+			ComputeHistory(Cli, Command.Files, HistoryByFile);
+		}
 	}
 	return bOk;
 }
@@ -553,6 +671,89 @@ bool FBranchiveSyncWorker::Execute(FBranchiveSourceControlCommand& Command)
 
 	FString Error;
 	ComputeStates(Cli, Command.PathToRepositoryRoot, Command.Files,
+		Command.SessionLockedFiles, States, OutBranch, bOutIsCurrent, Error);
+	return true;
+}
+
+// ------------------------------------------------- Resolve (ours / theirs)
+bool FBranchiveResolveWorkerBase::Execute(FBranchiveSourceControlCommand& Command)
+{
+	FScopeLock Lock(MutexFor(Command));
+	if (Command.Files.Num() == 0)
+	{
+		return true; // nothing selected to resolve
+	}
+	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
+
+	// Whole-side-per-file, Perforce-style (contract §4.19). This plugin only ever
+	// produces a MERGE conflict (Sync -> pending merge), so the op is Merge.
+	const BranchiveLore::EConflictSide SideEnum = ResolveUsingTheirs()
+		? BranchiveLore::EConflictSide::Theirs
+		: BranchiveLore::EConflictSide::Mine;
+
+	bool bAllOk = true;
+	int32 ResolvedCount = 0;
+	for (const FString& File : Command.Files)
+	{
+		const std::vector<std::string> Argv =
+			BranchiveLore::BuildConflictResolveArgv(BranchiveLore::EConflictOp::Merge, SideEnum, ToU8(File));
+		TArray<FString> Args;
+		Args.Reserve((int32)Argv.size());
+		for (const std::string& A : Argv) { Args.Add(ToF(A)); }
+
+		// Success == exit 0 with EMPTY stdout AND stderr (contract §4.19 live finding).
+		const FLoreCliResult Res = Cli.Run(Args);
+		if (!Res.Ok())
+		{
+			const BranchiveLore::EErrorClass Ec = BranchiveLore::ClassifyError(
+				Res.ReturnCode, Res.bSpawnFailed, ToU8(Res.StdErr), ToU8(Res.StdOut));
+			Command.ErrorMessages.Add(ToF(BranchiveLore::FriendlyMessage(Ec)));
+			bAllOk = false;
+			continue; // try to resolve as many of the selected files as possible
+		}
+		++ResolvedCount;
+	}
+
+	if (ResolvedCount > 0)
+	{
+		Command.InfoMessages.Add(TEXT("Resolved conflict(s) — check in to complete the merge."));
+	}
+
+	FString Error;
+	ComputeStates(Cli, Command.PathToRepositoryRoot, Command.Files,
+		Command.SessionLockedFiles, States, OutBranch, bOutIsCurrent, Error);
+	return bAllOk;
+}
+
+// ------------------------------------------------------------ Abort merge
+bool FBranchiveAbortMergeWorker::Execute(FBranchiveSourceControlCommand& Command)
+{
+	FScopeLock Lock(MutexFor(Command));
+	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
+
+	// `lore branch merge abort` — reverts the working tree to its pre-merge state
+	// (contract §4.20). No files argument.
+	const std::vector<std::string> Argv =
+		BranchiveLore::BuildConflictAbortArgv(BranchiveLore::EConflictOp::Merge);
+	TArray<FString> Args;
+	Args.Reserve((int32)Argv.size());
+	for (const std::string& A : Argv) { Args.Add(ToF(A)); }
+
+	const FLoreCliResult Res = Cli.Run(Args);
+	if (!Res.Ok())
+	{
+		const BranchiveLore::EErrorClass Ec = BranchiveLore::ClassifyError(
+			Res.ReturnCode, Res.bSpawnFailed, ToU8(Res.StdErr), ToU8(Res.StdOut));
+		Command.ErrorMessages.Add(ToF(BranchiveLore::FriendlyMessage(Ec)));
+		return false;
+	}
+
+	Command.InfoMessages.Add(TEXT("Merge aborted — the working tree was reverted to its pre-merge state."));
+
+	// Re-scan every cached file: the conflict is gone and content reverted.
+	TArray<FString> Refresh = Command.Files;
+	FString Error;
+	ComputeStates(Cli, Command.PathToRepositoryRoot, Refresh,
 		Command.SessionLockedFiles, States, OutBranch, bOutIsCurrent, Error);
 	return true;
 }

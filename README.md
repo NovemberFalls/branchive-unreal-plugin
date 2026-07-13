@@ -11,7 +11,7 @@ Implements **Branchive integrations contract 2.0.0**
 (Kotlin) and VS Code (TypeScript) plugins; the three share only that contract
 and the golden fixtures under `integrations/contract/fixtures/`.
 
-## Status (v0.1.0 — core loop)
+## Status (v0.2.0 — core loop + history / diff / conflict resolve)
 
 | UE operation | Lore mapping (contract §5.3) | State |
 |---|---|---|
@@ -23,8 +23,11 @@ and the golden fixtures under `integrations/contract/fixtures/`.
 | `Sync` | `sync` (pull) | wired |
 | `MarkForAdd` | `stage <file>` | wired |
 | `Delete` | `stage <file>` (records the on-disk deletion) | wired |
-| File history / diff panel | `file history` / `diff` | **deferred** (UsesFileRevisions=true, no history populated yet) |
-| Conflict resolve UI | `branch merge resolve` / `abort` | **deferred** (asset-heavy projects rarely hand-merge) |
+| `UpdateStatus(bUpdateHistory=true)` → History panel | `file history` (§4.12) → `FBranchiveSourceControlRevision` list | **wired** (Content Browser → Revision Control → History) |
+| Diff against revision | `file diff --source <sig>` (§4.13) — reverse-apply hunks → temp file `Get()` | **wired for text**; binary assets (`.uasset`/`.umap`) degrade to "unavailable" (no cat-at-revision verb; never fabricates bytes) |
+| `BranchiveResolveMine` / `BranchiveResolveTheirs` | `branch merge resolve mine\|theirs <file>` (§4.19) | **wired** (op + worker); whole-side ours/theirs only — Perforce-style, no 3-way hand-merge |
+| `BranchiveAbortMerge` | `branch merge abort` (§4.20) | **wired**; completion = ordinary `CheckIn`/commit (§4.21) |
+| Conflict resolve *context-menu* Slate entries | (dispatch the ops above) | **thin UI glue remaining** — ops are dispatchable now; state exposes `IsConflicted()` |
 | Changelists | — | **not used** (UsesChangelists=false) |
 | Cloud sign-in (PKCE) | loopback 47500–47599 + DPAPI/Keychain | **documented seam** (Wave-2b) — see `Private/Lore/LoreAuthSeam.h` |
 
@@ -47,9 +50,11 @@ Source/BranchiveSourceControl/
   Private/
     BranchiveSourceControlModule.*      IModuleInterface; RegisterModularFeature("SourceControl", &Provider)
     BranchiveSourceControlProvider.*    ISourceControlProvider (Init/Close/Tick/Execute/GetState/capabilities)
-    BranchiveSourceControlState.*       ISourceControlState (IsCheckedOut / IsCheckedOutOther → "Locked by <user>")
+    BranchiveSourceControlState.*       ISourceControlState (IsCheckedOut / IsCheckedOutOther → "Locked by <user>"; history via GetHistoryItem)
+    BranchiveSourceControlRevision.*    ISourceControlRevision (one revision; Get() reconstructs historical bytes for diff — §4.12/§4.13)
+    BranchiveSourceControlConflictOperations.h  FBranchiveResolveMine/Theirs + FBranchiveAbortMerge (§4.19/§4.20)
     BranchiveSourceControlCommand.*     IQueuedWork async command
-    BranchiveSourceControlOperations.*  one worker class per op (the core loop)
+    BranchiveSourceControlOperations.*  one worker class per op (core loop + history fetch + resolve/abort)
     BranchiveSourceControlSettings.*    lore binary path (SourceControlSettings.ini)
     SBranchiveSourceControlSettings.*   minimal Slate settings widget
     Lore/

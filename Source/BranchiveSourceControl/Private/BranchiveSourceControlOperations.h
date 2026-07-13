@@ -15,6 +15,7 @@
 #include "CoreMinimal.h"
 #include "IBranchiveSourceControlWorker.h"
 #include "BranchiveSourceControlState.h"
+#include "BranchiveSourceControlRevision.h"
 
 /** A resolved per-file state, applied to the provider cache on the game thread. */
 struct FBranchiveResolvedFileState
@@ -40,6 +41,9 @@ protected:
 	bool bOutIsCurrent = true;
 	TArray<FString> AcquiredLocks; // add to provider's session-lock set
 	TArray<FString> ReleasedLocks; // remove from provider's session-lock set
+
+	/** History payload (abs filename -> newest-first revisions), applied in UpdateStates. */
+	mutable TMap<FString, TArray<FBranchiveSourceControlRevisionRef>> HistoryByFile;
 };
 
 class FBranchiveConnectWorker : public FBranchiveSourceControlWorkerBase
@@ -95,5 +99,41 @@ class FBranchiveSyncWorker : public FBranchiveSourceControlWorkerBase
 {
 public:
 	virtual FName GetName() const override { return "Sync"; }
+	virtual bool Execute(FBranchiveSourceControlCommand& InCommand) override;
+};
+
+// ---- conflict resolution (contract §4.19 / §4.20) --------------------------
+
+/** Shared base for the ours/theirs whole-side resolve workers. */
+class FBranchiveResolveWorkerBase : public FBranchiveSourceControlWorkerBase
+{
+public:
+	virtual bool Execute(FBranchiveSourceControlCommand& InCommand) override;
+
+protected:
+	/** "mine" (ours) or "theirs" (incoming). */
+	virtual bool ResolveUsingTheirs() const = 0;
+};
+
+class FBranchiveResolveMineWorker : public FBranchiveResolveWorkerBase
+{
+public:
+	virtual FName GetName() const override { return "BranchiveResolveMine"; }
+protected:
+	virtual bool ResolveUsingTheirs() const override { return false; }
+};
+
+class FBranchiveResolveTheirsWorker : public FBranchiveResolveWorkerBase
+{
+public:
+	virtual FName GetName() const override { return "BranchiveResolveTheirs"; }
+protected:
+	virtual bool ResolveUsingTheirs() const override { return true; }
+};
+
+class FBranchiveAbortMergeWorker : public FBranchiveSourceControlWorkerBase
+{
+public:
+	virtual FName GetName() const override { return "BranchiveAbortMerge"; }
 	virtual bool Execute(FBranchiveSourceControlCommand& InCommand) override;
 };

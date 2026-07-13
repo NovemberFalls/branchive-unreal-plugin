@@ -156,6 +156,106 @@ int main(int argc, char** argv)
 		Check(cf.size() == 1 && cf[0] == "base.txt", "conflicted file parsed");
 	}
 
+	// ---- file history: multi-revision (newest-first, full-hex, null author) -
+	{
+		std::printf("file-history/multi-revision\n");
+		std::vector<FFileRevisionEntry> H = ParseFileHistory(ReadFile(P("file-history/multi-revision.stdout.txt")));
+		Check(H.size() == 3, "3 revisions parsed");
+		if (H.size() == 3)
+		{
+			// Order is PRESERVED newest-first: 5, 4, 1.
+			Check(H[0].Revision == 5 && H[1].Revision == 4 && H[2].Revision == 1, "order 5,4,1 (newest-first)");
+			// Full 64-hex signatures (NOT truncated).
+			Check(H[0].Signature == "3d66ac479f70415e58a5fdec00586253a6631e8e4b3ae81f6e02c6391d6cc086", "rev5 full-hex signature");
+			Check(H[0].Signature.size() == 64, "signature is full 64-hex");
+			Check(H[2].Signature == "ea7e12941c66872ff80ca235566516e379b72d8f815c429f7bf3a9099451e490", "rev1 full-hex signature");
+			// Per-entry code captured (M/M/A) from the leading status line.
+			Check(H[0].Code == 'M' && H[1].Code == 'M' && H[2].Code == 'A', "codes M,M,A");
+			// Branch id hash (NOT a human name).
+			Check(H[0].Branch == "e726318bbc3fd75ac8733a7e030cc35b", "rev5 branch id hash");
+			// Date captured verbatim (RFC-2822-ish), NOT parsed here.
+			Check(H[0].Date == "Sun, 28 Jun 2026 10:24:06 +0000", "rev5 date verbatim");
+			// Multi-line message accumulated; blank indented line dropped.
+			Check(H[0].Message.find("Fixes errors") != std::string::npos, "rev5 message has 'Fixes errors'");
+			Check(H[2].Message == "Initial import of MP_CPP", "rev1 message exact");
+			// NULL AUTHOR: the struct carries NO author field at all — there is
+			// nothing to assert-equal because the contract forbids fabricating one.
+			// (FFileRevisionEntry deliberately has no author/user member — §4.12 rule 5.)
+			Check(H[0].MergeParents.empty(), "rev5 has no merge parents (non-merge)");
+		}
+	}
+
+	// ---- file history: single-revision (one entry, code A, full-hex) --------
+	{
+		std::printf("file-history/single-revision\n");
+		std::vector<FFileRevisionEntry> H = ParseFileHistory(ReadFile(P("file-history/single-revision.stdout.txt")));
+		Check(H.size() == 1, "1 revision parsed");
+		if (H.size() == 1)
+		{
+			Check(H[0].Revision == 1, "single rev number 1");
+			Check(H[0].Code == 'A', "single rev code A (initial add)");
+			Check(H[0].Signature.size() == 64, "single rev full-hex signature");
+			Check(H[0].Message == "Initial import of MP_CPP", "single rev message exact");
+		}
+	}
+
+	// ---- conflict argv: resolve mine/theirs + abort (§4.19 / §4.20) ---------
+	{
+		std::printf("conflict argv (resolve/abort)\n");
+		// The absolute file path from the real conflict-resolve/mine fixture argv.
+		const std::string AbsFile =
+			"C:\\Users\\lenbo\\AppData\\Local\\Temp\\e2e-fixtures-8ee801b2\\ws-a\\base.txt";
+
+		std::vector<std::string> Mine = BuildConflictResolveArgv(EConflictOp::Merge, EConflictSide::Mine, AbsFile);
+		const std::vector<std::string> WantMine = { "branch", "merge", "resolve", "mine", AbsFile };
+		Check(Mine == WantMine, "resolve mine argv == branch merge resolve mine <file>");
+
+		std::vector<std::string> Theirs = BuildConflictResolveArgv(EConflictOp::Merge, EConflictSide::Theirs, AbsFile);
+		const std::vector<std::string> WantTheirs = { "branch", "merge", "resolve", "theirs", AbsFile };
+		Check(Theirs == WantTheirs, "resolve theirs argv == branch merge resolve theirs <file>");
+
+		std::vector<std::string> Abort = BuildConflictAbortArgv(EConflictOp::Merge);
+		const std::vector<std::string> WantAbort = { "branch", "merge", "abort" };
+		Check(Abort == WantAbort, "abort argv == branch merge abort");
+
+		// Cherry-pick / revert prefixes (contract completeness, §4.19).
+		std::vector<std::string> Cp = BuildConflictResolveArgv(EConflictOp::CherryPick, EConflictSide::Mine, AbsFile);
+		const std::vector<std::string> WantCp = { "revision", "cherry-pick", "resolve", "mine", AbsFile };
+		Check(Cp == WantCp, "cherry-pick resolve prefix");
+	}
+
+	// ---- diff parse + historical reconstruction (§4.11 / §4.13) -------------
+	{
+		std::printf("file-diff/reconstructed-historical-content\n");
+		std::vector<FDiffFile> Files = ParseUnifiedDiff(ReadFile(P("file-diff/reconstructed-historical-content.stdout.txt")));
+		Check(Files.size() == 1, "one diff file entry");
+		if (Files.size() == 1)
+		{
+			Check(!Files[0].bBinary, "text file (not binary)");
+			Check(Files[0].Path == "base.txt", "diff path base.txt (@1 decoration stripped)");
+			Check(Files[0].Hunks.size() == 1, "one hunk");
+			if (Files[0].Hunks.size() == 1)
+			{
+				const FDiffHunk& Hh = Files[0].Hunks[0];
+				Check(Hh.NewStart == 1, "hunk newStart 1");
+				Check(Hh.NewCount == 1, "hunk newCount 1 (one add)");
+				Check(Hh.OldLines.size() == 1 && Hh.OldLines[0] == "base file v1", "old side == 'base file v1'");
+
+				// Reverse-apply to the WORKING content (the '+' / new side) to get the
+				// historical (source@1) content back.
+				std::vector<std::string> Working = { "base file - main branch DIFFERENT edit" };
+				std::vector<std::string> Old = ReconstructOldContent(Working, Files[0].Hunks);
+				Check(Old.size() == 1 && Old[0] == "base file v1", "reconstructed old content == 'base file v1'");
+			}
+		}
+
+		// Binary diff -> synthesized binary entry, no hunks (§4.11 rule 5).
+		std::vector<FDiffFile> Bin = ParseUnifiedDiff(ReadFile(P("diff/binary-file.stdout.txt")));
+		bool bFoundBinary = false;
+		for (const FDiffFile& F : Bin) { if (F.bBinary) { bFoundBinary = true; } }
+		Check(bFoundBinary, "binary-file diff yields a binary entry");
+	}
+
 	// ---- SECURITY: isCloudRemoteUrl exact-host gate (auth §4.0) ------------
 	{
 		std::printf("isCloudRemoteUrl gate\n");

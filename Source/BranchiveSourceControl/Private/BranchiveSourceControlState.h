@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "ISourceControlState.h"
 #include "ISourceControlRevision.h"
+#include "BranchiveSourceControlRevision.h"
 
 /** Working-copy state for a single file, derived from `lore status --scan`. */
 namespace EBranchiveWorkingCopyState
@@ -34,12 +35,12 @@ public:
 	{
 	}
 
-	// ---- ISourceControlState (history — deferred for v1) -------------------
-	virtual int32 GetHistorySize() const override { return 0; }
-	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> GetHistoryItem(int32) const override { return nullptr; }
-	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FindHistoryRevision(int32) const override { return nullptr; }
-	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FindHistoryRevision(const FString&) const override { return nullptr; }
-	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> GetCurrentRevision() const override { return nullptr; }
+	// ---- ISourceControlState (history — contract §4.12) --------------------
+	virtual int32 GetHistorySize() const override { return History.Num(); }
+	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> GetHistoryItem(int32 HistoryIndex) const override;
+	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FindHistoryRevision(int32 RevisionNumber) const override;
+	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FindHistoryRevision(const FString& InRevision) const override;
+	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> GetCurrentRevision() const override;
 	virtual FResolveInfo GetResolveInfo() const override { return PendingResolveInfo; }
 
 #if SOURCE_CONTROL_WITH_SLATE
@@ -100,6 +101,10 @@ public:
 
 	/** Populated only while a merge conflict is pending (deferred UI for v1). */
 	FResolveInfo PendingResolveInfo;
+
+	/** Revision history (newest-first), from `lore file history` (contract §4.12).
+	 *  Populated by an UpdateStatus with SetUpdateHistory(true). */
+	TArray<FBranchiveSourceControlRevisionRef> History;
 
 	/** Timestamp of the last state update. */
 	FDateTime TimeStamp = FDateTime::Now();

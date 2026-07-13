@@ -9,6 +9,50 @@
 
 #define LOCTEXT_NAMESPACE "BranchiveSourceControl.State"
 
+TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FBranchiveSourceControlState::GetHistoryItem(int32 HistoryIndex) const
+{
+	if (History.IsValidIndex(HistoryIndex))
+	{
+		return History[HistoryIndex];
+	}
+	return nullptr;
+}
+
+TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FBranchiveSourceControlState::FindHistoryRevision(int32 RevisionNumber) const
+{
+	for (const FBranchiveSourceControlRevisionRef& Rev : History)
+	{
+		if (Rev->GetRevisionNumber() == RevisionNumber)
+		{
+			return Rev;
+		}
+	}
+	return nullptr;
+}
+
+TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FBranchiveSourceControlState::FindHistoryRevision(const FString& InRevision) const
+{
+	for (const FBranchiveSourceControlRevisionRef& Rev : History)
+	{
+		// Match the short label OR a prefix of the full signature (UE may pass either).
+		if (Rev->GetRevision() == InRevision || Rev->FullSignature.StartsWith(InRevision))
+		{
+			return Rev;
+		}
+	}
+	return nullptr;
+}
+
+TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FBranchiveSourceControlState::GetCurrentRevision() const
+{
+	// Newest-first ordering => index 0 is the tip revision this file is at.
+	if (History.Num() > 0)
+	{
+		return History[0];
+	}
+	return nullptr;
+}
+
 bool FBranchiveSourceControlState::IsSourceControlled() const
 {
 	return WorkingCopyState != EBranchiveWorkingCopyState::Unknown

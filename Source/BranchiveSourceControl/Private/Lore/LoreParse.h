@@ -103,6 +103,87 @@ namespace BranchiveLore
 	// throws — a line that fails to parse is silently skipped.
 	std::vector<FLock> ParseLocksJson(const std::string& StdoutText);
 
+	// --- file history (§4.12) ----------------------------------------------
+
+	struct FFileRevisionEntry
+	{
+		// Revision NUMBER as printed (`Revision  : 5`). -1 = not seen.
+		long long   Revision = -1;
+		// Full hex signature — this IS the changelist/check-in identifier UE keys on.
+		std::string Signature;
+		// Content address (`<hex>-<hex>`), used only for diagnostics.
+		std::string Address;
+		// Internal BranchId hash (NOT the human branch name).
+		std::string Branch;
+		// Raw date string, e.g. "Sun, 28 Jun 2026 10:24:06 +0000" (RFC-2822-ish).
+		std::string Date;
+		// Commit description (possibly multi-line, joined with '\n'). NEVER carries
+		// an author — contract §4.12 rule 5 (there is no author field anywhere in
+		// this output). Consumers MUST NOT fabricate one.
+		std::string Message;
+		// Per-entry status code that precedes the block ('A' add, 'M' edit, 'D'
+		// delete, ...). May be '\0' if the CLI didn't print one.
+		char        Code = '\0';
+		// Foreign merge-parent signatures (0, 1 or 2). Empty for a non-merge revision.
+		std::vector<std::string> MergeParents;
+	};
+
+	// Parse `lore file history <absFile>` stdout. Newest-first order is PRESERVED
+	// (the parser does not reorder). Never throws. There is deliberately NO author
+	// field — see FFileRevisionEntry::Message.
+	std::vector<FFileRevisionEntry> ParseFileHistory(const std::string& StdoutText);
+
+	// --- unified diff (§4.11) + historical reconstruction (§4.13) ----------
+
+	struct FDiffHunk
+	{
+		long long                OldStart = 0;   // 1-based start on the OLD (source) side
+		long long                NewStart = 0;   // 1-based start on the NEW (working) side
+		// OLD-side lines = context + deletions (marker char stripped), in order.
+		std::vector<std::string> OldLines;
+		// How many lines this hunk occupies on the NEW/working side (context + adds).
+		long long                NewCount = 0;
+	};
+
+	struct FDiffFile
+	{
+		std::string             Path;            // NEW-side path (OLD-side if new is /dev/null)
+		bool                    bBinary = false; // "Binary files differ"
+		std::vector<FDiffHunk>  Hunks;
+	};
+
+	// Parse a standard unified diff (as `lore diff` / `lore file diff` print).
+	// Direct port of the reference parseDiff() (contract §4.11). Never throws.
+	std::vector<FDiffFile> ParseUnifiedDiff(const std::string& StdoutText);
+
+	// Reverse-apply a (working-tree-vs-<source>) diff's hunks to the CURRENT
+	// working-tree lines to reconstruct the <source> revision's content
+	// (contract §4.13 step 5): hunks are applied LAST-TO-FIRST by NewStart so
+	// earlier splices don't shift later line numbers; each hunk replaces its
+	// NewCount working-side lines with its OldLines. Zero hunks => unchanged =>
+	// the working lines are returned verbatim. Never throws.
+	std::vector<std::string> ReconstructOldContent(const std::vector<std::string>& WorkingLines,
+	                                               const std::vector<FDiffHunk>& Hunks);
+
+	// --- conflict resolve/abort argv (§4.19 / §4.20) -----------------------
+
+	// Which in-progress operation a conflict belongs to. This plugin only ever
+	// PRODUCES a merge conflict (via Sync -> pending merge), so Merge is the
+	// default; the other prefixes exist for contract-faithful argv coverage.
+	enum class EConflictOp { Merge, CherryPick, Revert };
+
+	// Whole-side-per-file resolution — Perforce-style ours/theirs, NOT a 3-way
+	// hand-merge (Lore's model; UE assets are binary anyway).
+	enum class EConflictSide { Mine, Theirs };
+
+	// Build the resolve argv (WITHOUT the trailing "--repository <path>", which the
+	// process layer appends): e.g. {"branch","merge","resolve","mine","<absFile>"}.
+	std::vector<std::string> BuildConflictResolveArgv(EConflictOp Op, EConflictSide Side,
+	                                                  const std::string& AbsFile);
+
+	// Build the abort argv (WITHOUT "--repository"): e.g. {"branch","merge","abort"}.
+	std::vector<std::string> BuildConflictAbortArgv(EConflictOp Op);
+
 	// --- small shared string helpers (exposed for tests) --------------------
 	std::string Trim(const std::string& S);
 	bool        StartsWithNoCase(const std::string& S, const char* Prefix);

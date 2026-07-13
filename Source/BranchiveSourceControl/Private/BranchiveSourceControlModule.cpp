@@ -29,6 +29,11 @@ void FBranchiveSourceControlModule::StartupModule()
 	Provider.RegisterWorker("Revert",       FGetBranchiveSourceControlWorker::CreateStatic(&CreateWorker<FBranchiveRevertWorker>));     // = file reset
 	Provider.RegisterWorker("Sync",         FGetBranchiveSourceControlWorker::CreateStatic(&CreateWorker<FBranchiveSyncWorker>));       // = pull
 
+	// Conflict resolution — whole-side ours/theirs, Perforce-style (contract §4.19/§4.20).
+	Provider.RegisterWorker("BranchiveResolveMine",   FGetBranchiveSourceControlWorker::CreateStatic(&CreateWorker<FBranchiveResolveMineWorker>));   // = branch merge resolve mine
+	Provider.RegisterWorker("BranchiveResolveTheirs", FGetBranchiveSourceControlWorker::CreateStatic(&CreateWorker<FBranchiveResolveTheirsWorker>)); // = branch merge resolve theirs
+	Provider.RegisterWorker("BranchiveAbortMerge",    FGetBranchiveSourceControlWorker::CreateStatic(&CreateWorker<FBranchiveAbortMergeWorker>));    // = branch merge abort
+
 	Settings.LoadSettings();
 
 	// Bind our provider to the editor as a modular feature so it appears in the
