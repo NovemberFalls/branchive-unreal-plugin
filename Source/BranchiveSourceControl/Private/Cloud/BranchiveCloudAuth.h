@@ -90,6 +90,19 @@ private:
 	// blocks a source-control op; guarded by bMintInFlight so only one runs at a time.
 	void MintCloudTokenBlocking(const FString& RemoteUrl, const FString& RepoPath, const FString& Bearer);
 
+	// BUG2 (v0.3.5): GUARANTEE the signed-in identity — especially Identity.UserId — is
+	// loaded before the skip decision runs. RestoreOnStartup refreshes /auth/me, but it
+	// does so on a DETACHED background thread with no ordering vs the source-control ops
+	// UE fires at editor startup: a reopened ("restored") session's first op routinely
+	// beats it, so Identity.UserId is still empty when AmbientIdentityMatchesSignedIn
+	// runs — the id-match can't succeed (and prod /auth/me carries only @handle, so the
+	// email fallback can't either), the skip never fires, and the op falls through to the
+	// HANGING /auth/lore-token mint every time. This does a SYNCHRONOUS /auth/me (the fast,
+	// working endpoint — only /auth/lore-token hangs) to populate UserId when it is missing,
+	// so the skip can fire on the very first op. No-op (zero network) once the identity is
+	// cached. MUST be called only OFF the game thread (EnsureCloudAuth already is).
+	void EnsureIdentityLoaded();
+
 	// BUG1 fast-path: true when the CLI's AMBIENT identity already matches the
 	// signed-in user — matched by STABLE USER ID (the /auth/me identity.sub ==
 	// the CLI's authUserInfo.userId), with email only as a fallback. When true, the

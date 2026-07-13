@@ -159,7 +159,7 @@ TMap<ISourceControlProvider::EStatus, FString> FBranchiveSourceControlProvider::
 	Result.Add(EStatus::Remote, RemoteUrl);
 	Result.Add(EStatus::Branch, BranchName);
 	Result.Add(EStatus::ScmVersion, TEXT("lore"));
-	Result.Add(EStatus::PluginVersion, TEXT("0.3.4 (contract 2.0.0)"));
+	Result.Add(EStatus::PluginVersion, TEXT("0.3.5 (contract 2.0.0)"));
 	return Result;
 }
 

@@ -308,6 +308,19 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 	}
 	const FString Bearer = ToF(BearerStd);
 
+	// BUG2 (v0.3.5) — GUARANTEE the signed-in identity (esp. Identity.UserId) is loaded
+	// BEFORE the skip decision. On a reopened editor the RestoreOnStartup /auth/me runs on
+	// a detached thread with no ordering vs the ops UE fires at startup, so the first op
+	// beats it and UserId is still empty -> the id-match can't run -> the skip never fires
+	// -> every op hit the hanging /auth/lore-token. A synchronous /auth/me here (fast +
+	// working; only /auth/lore-token hangs) populates UserId so the skip below can fire on
+	// the very FIRST op. No-op once the identity is cached (steady state = zero network).
+	EnsureIdentityLoaded();
+	if (!IsSignedIn())
+	{
+		return; // a 401 during the refresh cleared the session — nothing to mint against
+	}
+
 	// BUG1 fast-path — SKIP the whole mint when the CLI is ALREADY authenticated as
 	// the signed-in user (matched by stable user id; see AmbientIdentityMatchesSignedIn).
 	// The mint's only job is to re-attribute `lore` ops to that identity; if the ambient
@@ -317,8 +330,9 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 	// network. Best-effort: a failed probe just falls through to the background mint.
 	if (AmbientIdentityMatchesSignedIn(RepoPath))
 	{
-		UE_LOG(LogBranchiveSourceControl, Verbose,
-			TEXT("Branchive ensureCloudAuth: CLI already authenticated as the signed-in user; skipping the token mint."));
+		// Log (not Verbose) so the live editor log DEFINITIVELY shows the skip path ran.
+		UE_LOG(LogBranchiveSourceControl, Log,
+			TEXT("Branchive ensureCloudAuth: ambient CLI identity matches signed-in user — skipping cloud token mint (no /auth/lore-token)."));
 		return;
 	}
 
@@ -328,6 +342,9 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 	// does the real work); the mint's re-attribution + workspace-pin rebind land for the
 	// NEXT op, after which the fast-path above skips the mint entirely. An in-flight guard
 	// keeps at most one background mint running per editor so bursts of ops can't pile up.
+	// Log (not Verbose) so the live editor log DEFINITIVELY shows the mint path ran.
+	UE_LOG(LogBranchiveSourceControl, Log,
+		TEXT("Branchive ensureCloudAuth: ambient CLI identity does not match (or could not be probed) — minting a cloud token in the background."));
 	if (bMintInFlight.AtomicSet(true))
 	{
 		return; // a background mint is already running
@@ -371,6 +388,48 @@ void FBranchiveCloudAuth::MintCloudTokenBlocking(const FString& RemoteUrl, const
 		LastCloudRepoPath = RepoPath;
 	}
 	ArmRefresh(ComputeRefreshDelaySeconds(Lt.ExpiresInSeconds));
+}
+
+void FBranchiveCloudAuth::EnsureIdentityLoaded()
+{
+	// Already have a usable stable id? Then the skip decision can run with NO network.
+	// This is the steady state after the first op of a session (and after RestoreOnStartup
+	// eventually lands), so EnsureCloudAuth adds zero latency on the hot path.
+	{
+		FScopeLock Lock(&StateMutex);
+		if (bHasIdentity && !Identity.UserId.IsEmpty())
+		{
+			return;
+		}
+	}
+	if (!TokenStore)
+	{
+		return;
+	}
+	const std::string BearerStd = TokenStore->Load();
+	if (BearerStd.empty())
+	{
+		return; // signed out — nothing to load (falls back to the CLI's ambient auth)
+	}
+
+	// SYNCHRONOUS /auth/me — the FAST, WORKING endpoint (only /auth/lore-token hangs), so
+	// even on the op's critical path this costs a normal round-trip, not the 8s mint hang.
+	// Re-fetching keeps Handle/Email/UserId fresh (prod /auth/me may carry only @handle +
+	// the stable usr_... id and no email — the exact shape the id-primary skip needs).
+	const FMeResult Me = FBranchiveBffClient(BffBaseUrl()).Me(ToF(BearerStd));
+	if (Me.bUnauthorized)
+	{
+		HandleBackground401(); // clears the session + offers re-auth (never opens a browser)
+		return;
+	}
+	if (Me.bSuccess)
+	{
+		FScopeLock Lock(&StateMutex);
+		Identity = Me.Identity;
+		bHasIdentity = true;
+	}
+	// A transient /auth/me failure (not 401) leaves the identity as-is; the caller then
+	// falls through to the non-blocking background mint, exactly as before.
 }
 
 bool FBranchiveCloudAuth::AmbientIdentityMatchesSignedIn(const FString& RepoPath) const

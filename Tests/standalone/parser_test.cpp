@@ -255,6 +255,29 @@ int main(int argc, char** argv)
 		Check(!AmbientMatchesSignedIn(a, "", ""), "no id and no email -> do not skip");
 		Check(!AmbientMatchesSignedIn(none, "usr_x", "user@example.com"),
 		      "ambient not found -> do not skip regardless of signed-in keys");
+
+		// ---- BUG2 (0.3.5): the RESTORE race — id-populated-before-decide ------
+		// The v0.3.4 skip decision is correct, but on a REOPENED editor the signed-in
+		// identity was still being restored ASYNCHRONOUSLY (RestoreOnStartup's /auth/me
+		// on a detached thread) when the first op ran. With a PROD /auth/me that carries
+		// only the @handle + the stable usr_... id and NO email, the state at decision
+		// time was: SignedInUserId="" (not restored yet) AND SignedInEmail="". So the
+		// SAME ambient identity produced a MINT (the hanging /auth/lore-token), every op.
+		//
+		// The fix (EnsureIdentityLoaded) does a synchronous /auth/me before the decision
+		// so UserId is populated on the FIRST op. This models the exact before/after: the
+		// SAME ambient identity `a` flips from MINT to SKIP once the id is loaded.
+		const std::string RestoredUserId = "usr_fbb8ccf7c60cc9cc20111338"; // == a.UserId
+		// BEFORE the fix (identity not yet restored: id AND email both blank) -> MINT.
+		Check(!AmbientMatchesSignedIn(a, "", ""),
+		      "restore race: id+email blank at decision time -> MINT (the 0.3.4 bug)");
+		// AFTER the fix (EnsureIdentityLoaded populated UserId via /auth/me) -> SKIP,
+		// even though the signed-in EMAIL is still blank (prod @handle-only identity).
+		Check(AmbientMatchesSignedIn(a, RestoredUserId, ""),
+		      "restore fixed: UserId populated (email still blank) -> SKIP (no /auth/lore-token)");
+		// And the skip does NOT depend on email being present at all — id alone decides.
+		Check(AmbientMatchesSignedIn(a, RestoredUserId, "anything@else.com"),
+		      "restore fixed: id decides regardless of email -> SKIP");
 	}
 
 	// ---- error taxonomy (§7) ----------------------------------------------
