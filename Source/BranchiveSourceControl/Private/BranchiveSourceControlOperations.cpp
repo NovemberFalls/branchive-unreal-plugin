@@ -17,6 +17,11 @@
 #include "HAL/PlatformProcess.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
+#include "Async/Async.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectHash.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #define LOCTEXT_NAMESPACE "BranchiveSourceControl.Ops"
 
@@ -293,6 +298,92 @@ namespace
 			}
 			OutHistory.Add(Abs, MoveTemp(Revs));
 		}
+	}
+
+	// --------------------------------------------------------- editor-view reconcile
+	// After the Delete worker removes a working-copy .uasset from disk (the physical
+	// removal that lets `lore stage` record the deletion — the SAME thing the bundled
+	// providers do: FGitDeleteWorker runs `git rm`, FPerforceDeleteWorker runs
+	// `p4 delete`, both of which remove the working file), reconcile UE's in-editor
+	// view so the deleted asset can neither GHOST in the Content Browser nor RESURRECT
+	// on a subsequent "Save All".
+	//
+	// Why this is needed (verified against UE 5.6 engine source — NOT guessed):
+	//   * A Content-Browser delete runs ObjectTools::DeleteObjectsInternal, which FIRST
+	//     tells the AssetRegistry the package is gone (FAssetRegistryModule::
+	//     PackageDeleted) and UNLOADS the package + GCs, and only THEN calls the
+	//     provider's FDelete worker. For a source-controlled file it does NOT delete the
+	//     file itself — it batches the path and expects the provider to remove it (which
+	//     is why removing the file in the worker is correct and matches Git/Perforce).
+	//     In the common case the package is already gone from memory here, so the loop
+	//     below finds nothing and does nothing.
+	//   * BUT if the package cannot be unloaded because it is still referenced in memory
+	//     (very common for an Input Action referenced by a loaded Input Mapping Context /
+	//     Enhanced-Input project settings / the open level), UE re-marks the SURVIVING
+	//     package PKG_NewlyCreated the instant it sees the file gone (ObjectTools.cpp,
+	//     the "mark newly created" pass immediately after FDelete). That surviving
+	//     newly-created package IS the ghost the user saw, and "Save All" then writes it
+	//     back to disk — so the delete "won't stick". (This UE behaviour is provider-
+	//     agnostic; Git/Perforce would hit it too. v0.3.6 removed the file exactly like
+	//     them, but never reconciled UE's view for this un-unloadable case.)
+	//
+	// We NEVER touch UObjects from the worker thread. The reconcile is queued to the
+	// game thread and runs AFTER DeleteObjectsInternal returns (its FDelete call and the
+	// re-mark pass are one synchronous stack), so it reliably reverses UE's re-mark.
+	void ReconcileEditorViewAfterDelete(const TArray<FString>& AbsFiles)
+	{
+		// Convert filenames -> long package names here (pure string work, thread-safe);
+		// only the UObject/AssetRegistry touches are deferred to the game thread.
+		TArray<FString> PackageNames;
+		PackageNames.Reserve(AbsFiles.Num());
+		for (const FString& Abs : AbsFiles)
+		{
+			FString PackageName;
+			if (FPackageName::TryConvertFilenameToLongPackageName(Abs, PackageName) && !PackageName.IsEmpty())
+			{
+				PackageNames.Add(MoveTemp(PackageName));
+			}
+		}
+		if (PackageNames.Num() == 0)
+		{
+			return;
+		}
+
+		AsyncTask(ENamedThreads::GameThread, [PackageNames = MoveTemp(PackageNames)]()
+		{
+			FAssetRegistryModule* RegistryModule =
+				FModuleManager::GetModulePtr<FAssetRegistryModule>(TEXT("AssetRegistry"));
+
+			for (const FString& PackageName : PackageNames)
+			{
+				UPackage* Package = FindPackage(nullptr, *PackageName);
+				if (Package == nullptr)
+				{
+					continue; // Unloaded cleanly (the common case) — nothing to reconcile.
+				}
+
+				// Drop each surviving asset from the registry so it stops surfacing as a
+				// ghost in the Content Browser (ObjectTools already called PackageDeleted
+				// before FDelete, but the PKG_NewlyCreated re-mark re-surfaced it).
+				if (RegistryModule != nullptr)
+				{
+					TArray<UObject*> ObjectsInPackage;
+					GetObjectsWithPackage(Package, ObjectsInPackage, /*bIncludeNestedObjects=*/false);
+					for (UObject* Obj : ObjectsInPackage)
+					{
+						if (Obj != nullptr && Obj->IsAsset())
+						{
+							RegistryModule->Get().AssetDeleted(Obj);
+						}
+					}
+				}
+
+				// Reverse UE's "newly created" re-mark and clear dirty so "Save All"
+				// skips the package instead of re-writing the file we just deleted.
+				Package->ClearPackageFlags(PKG_NewlyCreated);
+				Package->SetDirtyFlag(false);
+			}
+		});
 	}
 }
 
@@ -641,11 +732,14 @@ bool FBranchiveDeleteWorker::Execute(FBranchiveSourceControlCommand& Command)
 	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
 
 	// The Delete worker itself must remove the working-copy file from disk BEFORE
-	// staging — exactly like the UE Git provider's FGitDeleteWorker (`git rm`) and
-	// Perforce's `p4 delete`. UE's FDelete does NOT delete the file for us (the earlier
-	// "the editor deletes the file on disk first" assumption was WRONG — live UE 5.6
-	// testing showed the .uasset stayed on disk and tracked-clean, so the delete was
-	// never recorded and the asset "came back").
+	// staging — exactly like the bundled UE providers: FGitDeleteWorker runs `git rm`
+	// and FPerforceDeleteWorker runs `p4 delete`, BOTH of which remove the working-copy
+	// file. UE's ObjectTools::DeleteObjectsInternal deliberately does NOT delete the
+	// file for a source-controlled asset; it unloads the package + updates the
+	// AssetRegistry first, then batches the path to FDelete and expects the provider to
+	// remove it. So removing the file here is correct and matches the reference
+	// providers (the earlier "the editor deletes the file on disk first" assumption was
+	// wrong — the file stayed on disk tracked-clean and the delete was never recorded).
 	//
 	// LIVE CLI FINDING (lore 0.8.4+283, verified in a disposable workspace):
 	//   * `stage <absFile>` on a file that is STILL on disk is a no-op — stdout
@@ -657,6 +751,10 @@ bool FBranchiveDeleteWorker::Execute(FBranchiveSourceControlCommand& Command)
 	// Deleting-if-present is safe under ANY editor ordering — if the editor (or a
 	// concurrent op) already removed the file, the delete is a harmless no-op and the
 	// stage still records the deletion.
+	//
+	// AFTER the delete is recorded we reconcile UE's editor view (see
+	// ReconcileEditorViewAfterDelete) so a deleted asset whose package UE could not
+	// unload does not ghost in the Content Browser or resurrect on "Save All".
 	IFileManager& FileManager = IFileManager::Get();
 	for (const FString& File : Command.Files)
 	{
@@ -681,6 +779,12 @@ bool FBranchiveDeleteWorker::Execute(FBranchiveSourceControlCommand& Command)
 		Command.ErrorMessages.Add(ToF(BranchiveLore::FriendlyMessage(Ec)));
 		return false;
 	}
+
+	// The file(s) are now off disk and the deletion is recorded to Lore. Reconcile UE's
+	// editor view (game thread) so an un-unloadable deleted asset can neither ghost in
+	// the Content Browser nor resurrect on "Save All". No-op when the package unloaded
+	// cleanly (the common case).
+	ReconcileEditorViewAfterDelete(Command.Files);
 
 	// Recompute: the file is off disk AND shows as staged `D`, so ClassifyWorkingCopy
 	// returns Deleted (=> "Marked for delete", CanCheckIn true) — and it stays Deleted
