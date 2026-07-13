@@ -232,6 +232,60 @@ namespace BranchiveLore
 		return Out;
 	}
 
+	// ------------------------------------------------- working-copy classification
+
+	// Slash-normalize + lowercase a repo-relative path so status rows (which the CLI
+	// may print with either separator/casing) match the UE-side lookup key.
+	static std::string NormalizeRelPath(const std::string& In)
+	{
+		std::string R;
+		R.reserve(In.size());
+		for (char c : In)
+		{
+			if (c == '\\') { c = '/'; }
+			R.push_back(LowerAscii(c));
+		}
+		return R;
+	}
+
+	static EWorkingClass CodeToClass(char Code)
+	{
+		switch (Code)
+		{
+		case 'A': return EWorkingClass::Added;
+		case 'D': return EWorkingClass::Deleted;
+		case 'M': return EWorkingClass::Modified;
+		default:  return EWorkingClass::Modified; // any other change code
+		}
+	}
+
+	static const FStatusEntry* FindEntry(const std::vector<FStatusEntry>& V, const std::string& NormRel)
+	{
+		for (const FStatusEntry& E : V)
+		{
+			if (NormalizeRelPath(E.Path) == NormRel) { return &E; }
+		}
+		return nullptr;
+	}
+
+	EWorkingClass ClassifyWorkingCopy(const FStatus& Status,
+	                                  const std::string& RelPath,
+	                                  bool bExistsOnDisk)
+	{
+		const std::string Rel = NormalizeRelPath(RelPath);
+
+		// Highest priority first — mirrors the reference overwrite order
+		// (untracked < unstaged < staged < conflicts): conflicts/staged win.
+		if (FindEntry(Status.Conflicts, Rel)) { return EWorkingClass::Conflicted; }
+		if (const FStatusEntry* E = FindEntry(Status.Staged,   Rel)) { return CodeToClass(E->Code); }
+		if (const FStatusEntry* E = FindEntry(Status.Unstaged, Rel)) { return CodeToClass(E->Code); }
+		if (FindEntry(Status.Untracked, Rel)) { return EWorkingClass::NotControlled; }
+
+		// Absent from `status --scan`: tracked-clean iff present on disk; otherwise a
+		// brand-new/unknown path => NotControlled (=> Mark for Add, never lock).
+		return bExistsOnDisk ? EWorkingClass::Unchanged : EWorkingClass::NotControlled;
+	}
+
 	// ------------------------------------------------------------------- locks
 
 	// Extract a JSON string value for `"key":"..."` from a flat NDJSON object.

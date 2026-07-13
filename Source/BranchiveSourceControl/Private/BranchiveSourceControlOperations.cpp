@@ -65,14 +65,20 @@ namespace
 		return Rel;
 	}
 
-	EBranchiveWorkingCopyState::Type CodeToState(char Code)
+	// Map the engine-independent classification (LoreParse) onto the UE state enum.
+	// The classification decision itself lives in BranchiveLore::ClassifyWorkingCopy
+	// (single source of truth, unit-tested standalone) — this is a pure 1:1 relabel.
+	EBranchiveWorkingCopyState::Type MapClass(BranchiveLore::EWorkingClass C)
 	{
-		switch (Code)
+		switch (C)
 		{
-		case 'A': return EBranchiveWorkingCopyState::Added;
-		case 'D': return EBranchiveWorkingCopyState::Deleted;
-		case 'M': return EBranchiveWorkingCopyState::Modified;
-		default:  return EBranchiveWorkingCopyState::Modified;
+		case BranchiveLore::EWorkingClass::Unchanged:     return EBranchiveWorkingCopyState::Unchanged;
+		case BranchiveLore::EWorkingClass::Added:         return EBranchiveWorkingCopyState::Added;
+		case BranchiveLore::EWorkingClass::Deleted:       return EBranchiveWorkingCopyState::Deleted;
+		case BranchiveLore::EWorkingClass::Modified:      return EBranchiveWorkingCopyState::Modified;
+		case BranchiveLore::EWorkingClass::Conflicted:    return EBranchiveWorkingCopyState::Conflicted;
+		case BranchiveLore::EWorkingClass::NotControlled: return EBranchiveWorkingCopyState::NotControlled;
+		default:                                          return EBranchiveWorkingCopyState::Unknown;
 		}
 	}
 
@@ -203,25 +209,7 @@ namespace
 			}
 		}
 
-		// Build lookup maps keyed by normalized repo-relative path.
-		TMap<FString, EBranchiveWorkingCopyState::Type> StateByRel;
-		auto AddEntries = [&](const std::vector<BranchiveLore::FStatusEntry>& V, bool bConflicted, bool bUntracked)
-		{
-			for (const BranchiveLore::FStatusEntry& E : V)
-			{
-				const FString Rel = NormalizeRel(ToF(E.Path));
-				EBranchiveWorkingCopyState::Type S = bConflicted ? EBranchiveWorkingCopyState::Conflicted
-					: bUntracked ? EBranchiveWorkingCopyState::NotControlled
-					: CodeToState(E.Code);
-				StateByRel.Add(Rel, S); // later (higher-priority) adds overwrite
-			}
-		};
-		// Priority low -> high (later overwrites): untracked < unstaged < staged < conflicts.
-		AddEntries(St.Untracked, /*conflict*/false, /*untracked*/true);
-		AddEntries(St.Unstaged,  false, false);
-		AddEntries(St.Staged,    false, false);
-		AddEntries(St.Conflicts, true,  false);
-
+		// Lock owner lookup, keyed by normalized repo-relative path.
 		TMap<FString, FString> LockOwnerByRel;
 		for (const BranchiveLore::FLock& L : Locks)
 		{
@@ -235,14 +223,17 @@ namespace
 			RS.bIsCurrent = OutIsCurrent;
 
 			const FString Rel = NormalizeRel(MakeRepoRelative(Abs, RepoRoot));
-			if (const EBranchiveWorkingCopyState::Type* Found = StateByRel.Find(Rel))
-			{
-				RS.State = *Found;
-			}
-			else
-			{
-				RS.State = EBranchiveWorkingCopyState::Unchanged;
-			}
+
+			// Single source of truth for Check-Out-vs-Mark-for-Add (ClassifyWorkingCopy).
+			// The on-disk probe is what keeps a brand-new asset (absent from `status
+			// --scan` AND not yet written) OUT of the "controlled" bucket, so UE marks it
+			// for add instead of trying to `lock acquire` a nonexistent branch (the
+			// IA_Test smoke). Cost: one stat per file NOT already listed as a pending
+			// change — negligible next to the `status --scan` that just walked the whole
+			// working tree, and far cheaper than a per-file `file history` probe (which we
+			// deliberately do NOT run during a bulk UpdateStatus over 10k+ assets).
+			const bool bOnDisk = FPaths::FileExists(Abs);
+			RS.State = MapClass(BranchiveLore::ClassifyWorkingCopy(St, ToU8(Rel), bOnDisk));
 
 			if (const FString* Owner = LockOwnerByRel.Find(Rel))
 			{

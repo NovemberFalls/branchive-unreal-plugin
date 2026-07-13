@@ -120,7 +120,7 @@ FString FBranchiveBffClient::DefaultUserAgent()
 	// PlatformName() is ANSI (const char*) — convert to an FString first, then format
 	// (%s wants a TCHAR*; the checked-format-string macro rejects a raw char/char*).
 	const FString Platform = ANSI_TO_TCHAR(FPlatformProperties::PlatformName());
-	return FString::Printf(TEXT("Branchive-UE5/0.3.2 (%s)"), *Platform);
+	return FString::Printf(TEXT("Branchive-UE5/0.3.3 (%s)"), *Platform);
 }
 
 FTokenExchangeResult FBranchiveBffClient::ExchangeCode(const FString& Code, const FString& CodeVerifier) const

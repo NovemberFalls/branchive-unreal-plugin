@@ -105,6 +105,67 @@ int main(int argc, char** argv)
 		Check(s.SyncState == ESyncState::InSync, "syncState==in-sync");
 	}
 
+	// ---- working-copy classification: Check-Out vs Mark-for-Add (§5.3) ------
+	// The IA_Test in-editor smoke bug lived here: a brand-new asset that is absent
+	// from `status --scan` AND not yet on disk MUST classify NotControlled (=> UE
+	// Mark for Add => `stage`), NOT Unchanged (=> UE Check Out => `lock acquire` on a
+	// path the repo has never seen => "That branch does not exist" => save aborts).
+	{
+		std::printf("classify: new/untracked vs tracked-clean vs unknown\n");
+
+		// Mirror of the UE FBranchiveSourceControlState predicates so the gate asserts
+		// the actual Check-Out-vs-Add contract, not just the raw enum. Kept in lockstep
+		// with BranchiveSourceControlState.cpp (IsSourceControlled/CanCheckout/CanAdd).
+		// Locks are absent in every case below, so CanCheckout == IsSourceControlled.
+		auto UeIsSourceControlled = [](EWorkingClass c) { return c != EWorkingClass::NotControlled; };
+		auto UeCanAdd            = [](EWorkingClass c) { return c == EWorkingClass::NotControlled; };
+		auto UeCanCheckout       = [&](EWorkingClass c) { return UeIsSourceControlled(c); };
+
+		// Fixture with an UNTRACKED file (third.txt, code 'A') + an unstaged edit (base.txt, 'M').
+		FStatus su = ParseStatus(ReadFile(P("status/with-unstaged-changes.stdout.txt")));
+
+		// (1) Untracked/'A' -> NotControlled -> Mark for Add (regardless of on-disk).
+		EWorkingClass cUntracked = ClassifyWorkingCopy(su, "third.txt", /*onDisk*/true);
+		Check(cUntracked == EWorkingClass::NotControlled, "untracked 'A' -> NotControlled");
+		Check(!UeIsSourceControlled(cUntracked) && UeCanAdd(cUntracked) && !UeCanCheckout(cUntracked),
+		      "untracked -> !IsSourceControlled, CanAdd, !CanCheckout");
+
+		// (2) Tracked-clean (NOT in status, present on disk) -> Unchanged -> Check Out.
+		EWorkingClass cClean = ClassifyWorkingCopy(su, "Content/IA_Primary.uasset", /*onDisk*/true);
+		Check(cClean == EWorkingClass::Unchanged, "on-disk + not-in-status -> Unchanged (tracked-clean)");
+		Check(UeIsSourceControlled(cClean) && !UeCanAdd(cClean) && UeCanCheckout(cClean),
+		      "tracked-clean -> IsSourceControlled, !CanAdd, CanCheckout");
+
+		// (3) Brand-new/unknown (NOT in status, NOT on disk) -> NotControlled -> Mark for Add.
+		//     THIS is the IA_Test case: previously defaulted to Unchanged (the bug).
+		EWorkingClass cNew = ClassifyWorkingCopy(su, "Content/IA_Test.uasset", /*onDisk*/false);
+		Check(cNew == EWorkingClass::NotControlled, "not-on-disk + not-in-status -> NotControlled (new asset)");
+		Check(!UeIsSourceControlled(cNew) && UeCanAdd(cNew) && !UeCanCheckout(cNew),
+		      "new asset -> !IsSourceControlled, CanAdd, !CanCheckout (Mark for Add on save)");
+
+		// (4) Unstaged modify -> Modified (source-controlled, not a new add).
+		EWorkingClass cMod = ClassifyWorkingCopy(su, "base.txt", /*onDisk*/true);
+		Check(cMod == EWorkingClass::Modified, "unstaged 'M' -> Modified");
+		Check(UeIsSourceControlled(cMod) && !UeCanAdd(cMod), "modified -> IsSourceControlled, !CanAdd");
+
+		// (5) Staged add -> Added (already in source control's added state, CanCheckIn).
+		FStatus ss = ParseStatus(ReadFile(P("status/with-staged-changes.stdout.txt")));
+		EWorkingClass cStagedAdd = ClassifyWorkingCopy(ss, "third.txt", /*onDisk*/true);
+		Check(cStagedAdd == EWorkingClass::Added, "staged 'A' -> Added");
+		Check(UeIsSourceControlled(cStagedAdd), "staged add -> IsSourceControlled");
+		EWorkingClass cStagedMod = ClassifyWorkingCopy(ss, "base.txt", /*onDisk*/true);
+		Check(cStagedMod == EWorkingClass::Modified, "staged 'M' -> Modified");
+
+		// (6) Conflict wins over everything (highest priority section).
+		FStatus sc = ParseStatus(ReadFile(P("status/with-conflict.stdout.txt")));
+		EWorkingClass cConf = ClassifyWorkingCopy(sc, "base.txt", /*onDisk*/true);
+		Check(cConf == EWorkingClass::Conflicted, "conflict -> Conflicted");
+
+		// (7) Path matching is case-insensitive + slash-normalized (Windows paths).
+		EWorkingClass cCase = ClassifyWorkingCopy(su, "THIRD.TXT", /*onDisk*/true);
+		Check(cCase == EWorkingClass::NotControlled, "case-insensitive path match (untracked)");
+	}
+
 	// ---- locks: with a lock (owner sentinel; ignore stray events) ----------
 	{
 		std::printf("lock-query/json-with-locks\n");

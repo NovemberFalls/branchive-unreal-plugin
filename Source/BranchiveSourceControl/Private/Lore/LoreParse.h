@@ -82,6 +82,38 @@ namespace BranchiveLore
 	// Parse `lore status --scan` stdout. Never throws.
 	FStatus ParseStatus(const std::string& StdoutText);
 
+	// --- working-copy classification (contract §5.3 UE Check-Out vs Add) -----
+
+	// Engine-independent mirror of the UE-module EBranchiveWorkingCopyState, so the
+	// Check-Out-vs-Mark-for-Add decision is unit-testable WITHOUT Unreal Engine.
+	enum class EWorkingClass
+	{
+		Unchanged,     // tracked, clean (present on disk, absent from `status --scan`)
+		Added,         // staged/added ('A')
+		Deleted,       // 'D'
+		Modified,      // 'M' (or any other pending change code)
+		Conflicted,    // listed under "Changes in conflict:"
+		NotControlled, // untracked-on-disk, OR a brand-new/unknown path NOT on disk
+	};
+
+	// Resolve a single file's working-copy class from a parsed `status --scan` plus an
+	// on-disk signal, keyed by its repo-relative path (matched case-insensitively and
+	// slash-normalized). This is the SINGLE source of truth the UE provider uses to
+	// decide "Check Out" (tracked => §4.15 lock acquire) vs "Mark for Add"
+	// (new/untracked => §4.2 stage).
+	//
+	// THE LOAD-BEARING RULE (the IA_Test in-editor smoke bug): a path NOT listed by
+	// `status --scan` is treated as tracked-clean (Unchanged) ONLY when it is actually
+	// present on disk. A path that is neither in status NOR on disk is a brand-new asset
+	// the editor is about to write — it MUST be NotControlled (=> CanAdd), never
+	// defaulted to "controlled", or UE would try to `lock acquire` a path the repo has
+	// never seen and Lore returns "That branch does not exist", aborting the save before
+	// the .uasset is even written. (An on-disk *untracked* file never reaches the on-disk
+	// fallback: `--scan` lists it in the Untracked section with code 'A' => NotControlled.)
+	EWorkingClass ClassifyWorkingCopy(const FStatus& Status,
+	                                  const std::string& RelPath,
+	                                  bool bExistsOnDisk);
+
 	// --- locks --------------------------------------------------------------
 
 	// The literal sentinel the CLI emits for `owner` on an auth-less server
