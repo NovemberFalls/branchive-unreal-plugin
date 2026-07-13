@@ -1,0 +1,60 @@
+// Copyright Branchive.
+//
+// Thin UE wrapper that spawns the `lore` CLI as a child process — NEVER a shell
+// (contract §3.1). v1 uses spawn-per-op via FPlatformProcess::ExecProcess with
+// the workspace path as cwd (contract §3.2). The persistent-CLI-shell
+// optimization (one long-lived `lore` process) is a documented future
+// optimization, deliberately not used for v1 simplicity (contract §3, and the
+// UEPlasticPlugin reference which offers both).
+#pragma once
+
+#include "CoreMinimal.h"
+
+/** Result of one `lore` invocation. */
+struct FLoreCliResult
+{
+	int32   ReturnCode = -1;
+	FString StdOut;
+	FString StdErr;
+	/** True if the process could not be spawned at all (binary not found). */
+	bool    bSpawnFailed = false;
+
+	bool Ok() const { return !bSpawnFailed && ReturnCode == 0; }
+
+	/** stdout + "\n" + stderr, trimmed — used for conflict-marker scans. */
+	FString Combined() const;
+};
+
+/**
+ * Spawns `lore` with an argv array. `--repository <RepoPath>` is appended as the
+ * LAST argument automatically (contract §3.2) unless bAppendRepository is false.
+ */
+class FLoreCli
+{
+public:
+	FLoreCli(const FString& InBinaryPath, const FString& InRepoPath)
+		: BinaryPath(InBinaryPath), RepoPath(InRepoPath)
+	{
+	}
+
+	/** Blocking run. Safe to call from a background (worker) thread. */
+	FLoreCliResult Run(const TArray<FString>& Args, bool bAppendRepository = true) const;
+
+	const FString& GetBinaryPath() const { return BinaryPath; }
+	const FString& GetRepoPath() const { return RepoPath; }
+
+	/**
+	 * Resolve the lore binary path: explicit setting -> LORE_BIN env ->
+	 * bare "lore"/"lore.exe" on PATH. Returns the best candidate (may be a bare
+	 * name if nothing else is configured).
+	 */
+	static FString ResolveBinaryPath(const FString& ConfiguredPath);
+
+	/** Quote a single argument for a Windows-style command line (also correct
+	 *  enough for UE's own re-splitting on other platforms). */
+	static FString QuoteArg(const FString& Arg);
+
+private:
+	FString BinaryPath;
+	FString RepoPath;
+};

@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Branchive",
+	"Description": "Branchive revision control for Unreal Engine 5 — wraps the 'lore' CLI (commit/push/pull with server-enforced per-file locking). Implements Branchive integrations contract 2.0.0.",
+	"Category": "Source Control",
+	"CreatedBy": "Branchive",
+	"CreatedByURL": "https://branchive.io",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "https://branchive.io",
+	"EnabledByDefault": false,
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "BranchiveSourceControl",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "EarliestPossible"
+		}
+	]
+}

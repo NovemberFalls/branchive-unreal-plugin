@@ -1,0 +1,89 @@
+# Runs in the PUBLIC MIRROR repo (e.g. github.com/YOUR_ORG/branchive-unreal-plugin),
+# NOT in the private lore-gui monorepo. This file travels with the
+# `integrations/scripts/publish-mirror.sh unreal` subtree split.
+#
+# Triggered by a `vNN.NN.NN`-style tag. Builds each supported UE version via
+# `RunUAT BuildPlugin` and attaches a packaged plugin zip per engine version
+# to a GitHub Release (Unreal plugin binaries are per-engine-version, so a
+# single zip cannot serve both 5.6 and 5.4 -- see README.md).
+#
+# Same runner caveat as build.yml: this expects UE_ROOT_5_6 / UE_ROOT_5_4 on
+# a SELF-HOSTED Windows runner with UE preinstalled; GitHub-hosted
+# `windows-latest` does not ship Unreal Engine.
+#
+# NOTE: submitting to Fab (Epic's marketplace, formerly the UE Marketplace)
+# is a separate, manual process through Epic's own web portal/review --
+# there is no supported unattended API for it, so it is intentionally NOT
+# automated here. After this job publishes the GitHub Release, a human
+# uploads the relevant zip through https://www.fab.com/ as needed.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & release plugin (UE ${{ matrix.ue_version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ue_version: '5.6'
+            ue_root_env: UE_ROOT_5_6
+          - ue_version: '5.4'
+            ue_root_env: UE_ROOT_5_4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Unreal Engine install path
+        id: ue
+        shell: pwsh
+        run: |
+          $ueRoot = [Environment]::GetEnvironmentVariable("${{ matrix.ue_root_env }}")
+          if (-not $ueRoot) {
+            Write-Error "Runner is missing env var ${{ matrix.ue_root_env }} pointing at a UE ${{ matrix.ue_version }} install. See README.md 'Unreal CI runner' for self-hosted runner setup."
+            exit 1
+          }
+          if (-not (Test-Path $ueRoot)) {
+            Write-Error "${{ matrix.ue_root_env }}='$ueRoot' does not exist on this runner."
+            exit 1
+          }
+          echo "ue_root=$ueRoot" >> $env:GITHUB_OUTPUT
+
+      - name: Build plugin via RunUAT BuildPlugin
+        shell: pwsh
+        run: |
+          $uat = Join-Path "${{ steps.ue.outputs.ue_root }}" "Engine\Build\BatchFiles\RunUAT.bat"
+          $uplugin = Get-ChildItem -Path . -Filter *.uplugin -Recurse | Select-Object -First 1
+          if (-not $uplugin) {
+            Write-Error "No .uplugin file found under $PWD"
+            exit 1
+          }
+          & $uat BuildPlugin `
+            -Plugin="$($uplugin.FullName)" `
+            -Package="$PWD\dist\${{ matrix.ue_version }}" `
+            -Rocket
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Zip packaged plugin
+        shell: pwsh
+        run: |
+          $zipName = "branchive-unreal-plugin-ue${{ matrix.ue_version }}.zip"
+          Compress-Archive -Path "dist/${{ matrix.ue_version }}/*" -DestinationPath $zipName
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+      - name: Attach plugin zip to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_NAME }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,82 @@
+# Runs in the PUBLIC MIRROR repo (e.g. github.com/YOUR_ORG/branchive-unreal-plugin),
+# NOT in the private lore-gui monorepo. This file travels with the
+# `integrations/scripts/publish-mirror.sh unreal` subtree split.
+#
+# Builds the plugin against each supported UE version using
+# `RunUAT BuildPlugin`, the standard way to produce an engine-version-
+# specific packaged plugin (Unreal plugin binaries are NOT
+# engine-version-portable -- see README.md "per-engine-version binaries").
+#
+# IMPORTANT: GitHub-hosted `windows-latest` runners do NOT have Unreal
+# Engine preinstalled (a UE install is 30-100+GB and requires an Epic
+# Games account / EULA acceptance, so it can't just be `apt install`-ed in
+# a job step). This workflow expects UE_ROOT_5_6 / UE_ROOT_5_4 to already
+# point at working UE installs on whatever runner executes it -- in
+# practice that means a SELF-HOSTED Windows runner with UE 5.6 and 5.4
+# installed. See README.md "Unreal CI runner" for setup notes. If you are
+# using GitHub-hosted runners, this job will fail fast with a clear error
+# rather than hang.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build plugin (UE ${{ matrix.ue_version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ue_version: '5.6'
+            ue_root_env: UE_ROOT_5_6
+          - ue_version: '5.4'
+            ue_root_env: UE_ROOT_5_4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Unreal Engine install path
+        id: ue
+        shell: pwsh
+        run: |
+          $ueRoot = [Environment]::GetEnvironmentVariable("${{ matrix.ue_root_env }}")
+          if (-not $ueRoot) {
+            Write-Error "Runner is missing env var ${{ matrix.ue_root_env }} pointing at a UE ${{ matrix.ue_version }} install. See README.md 'Unreal CI runner' for self-hosted runner setup."
+            exit 1
+          }
+          if (-not (Test-Path $ueRoot)) {
+            Write-Error "${{ matrix.ue_root_env }}='$ueRoot' does not exist on this runner."
+            exit 1
+          }
+          echo "ue_root=$ueRoot" >> $env:GITHUB_OUTPUT
+
+      - name: Build plugin via RunUAT BuildPlugin
+        shell: pwsh
+        run: |
+          $uat = Join-Path "${{ steps.ue.outputs.ue_root }}" "Engine\Build\BatchFiles\RunUAT.bat"
+          $uplugin = Get-ChildItem -Path . -Filter *.uplugin -Recurse | Select-Object -First 1
+          if (-not $uplugin) {
+            Write-Error "No .uplugin file found under $PWD"
+            exit 1
+          }
+          & $uat BuildPlugin `
+            -Plugin="$($uplugin.FullName)" `
+            -Package="$PWD\dist\${{ matrix.ue_version }}" `
+            -Rocket
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload packaged plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-ue${{ matrix.ue_version }}
+          path: dist/${{ matrix.ue_version }}
+          retention-days: 14
+          if-no-files-found: error

@@ -1,0 +1,10 @@
+# Unreal Engine build output — never commit these
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+*.tmp
+
+# Packaged plugin output (RunUAT BuildPlugin -Package=...) lands outside the repo,
+# but guard against an in-tree package dir too.
+Package/
