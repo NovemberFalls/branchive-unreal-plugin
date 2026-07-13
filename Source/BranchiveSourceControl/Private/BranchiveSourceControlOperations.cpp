@@ -13,6 +13,7 @@
 #include "Lore/LoreErrors.h"
 
 #include "SourceControlOperations.h"
+#include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/Paths.h"
@@ -639,7 +640,37 @@ bool FBranchiveDeleteWorker::Execute(FBranchiveSourceControlCommand& Command)
 	}
 	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
 
-	// The editor deletes the file on disk first; staging it records the delete.
+	// The Delete worker itself must remove the working-copy file from disk BEFORE
+	// staging — exactly like the UE Git provider's FGitDeleteWorker (`git rm`) and
+	// Perforce's `p4 delete`. UE's FDelete does NOT delete the file for us (the earlier
+	// "the editor deletes the file on disk first" assumption was WRONG — live UE 5.6
+	// testing showed the .uasset stayed on disk and tracked-clean, so the delete was
+	// never recorded and the asset "came back").
+	//
+	// LIVE CLI FINDING (lore 0.8.4+283, verified in a disposable workspace):
+	//   * `stage <absFile>` on a file that is STILL on disk is a no-op — stdout
+	//     "No changes staged", `status --scan` shows NO `D` row. THIS is the bug.
+	//   * `stage <absFile>` on a MISSING file records the delete — stdout
+	//     "Staging 1 files (... 1 deleted ...)", `status --scan` shows `D <path>`,
+	//     and a subsequent commit removes it from the repo (file history ends in `D`).
+	// So: physically delete each file first, THEN stage so the `D` is captured.
+	// Deleting-if-present is safe under ANY editor ordering — if the editor (or a
+	// concurrent op) already removed the file, the delete is a harmless no-op and the
+	// stage still records the deletion.
+	IFileManager& FileManager = IFileManager::Get();
+	for (const FString& File : Command.Files)
+	{
+		if (FileManager.FileExists(*File))
+		{
+			// EvenReadOnly: a synced-but-unlocked asset can be read-only on disk.
+			// RequireExists=false + Quiet: tolerate a prior/concurrent removal.
+			FileManager.Delete(*File, /*RequireExists=*/false, /*EvenReadOnly=*/true, /*Quiet=*/true);
+		}
+	}
+
+	// With the file(s) gone from disk, staging the explicit paths records each as a
+	// `D` deletion (verified live) — no `. --scan` needed, and staging only the
+	// intended files avoids over-staging unrelated working-tree changes.
 	TArray<FString> Args = { TEXT("stage") };
 	Args.Append(Command.Files);
 	const FLoreCliResult Res = Cli.Run(Args);
@@ -651,6 +682,9 @@ bool FBranchiveDeleteWorker::Execute(FBranchiveSourceControlCommand& Command)
 		return false;
 	}
 
+	// Recompute: the file is off disk AND shows as staged `D`, so ClassifyWorkingCopy
+	// returns Deleted (=> "Marked for delete", CanCheckIn true) — and it stays Deleted
+	// across status refreshes (a missing file is never reclassified tracked-clean).
 	FString Error;
 	ComputeStates(Cli, Command.PathToRepositoryRoot, Command.Files,
 		Command.SessionLockedFiles, States, OutBranch, bOutIsCurrent, Error);

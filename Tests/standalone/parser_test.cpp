@@ -166,6 +166,62 @@ int main(int argc, char** argv)
 		Check(cCase == EWorkingClass::NotControlled, "case-insensitive path match (untracked)");
 	}
 
+	// ---- classify: DELETE (the FDelete "Marked for delete" fix, §4.1 code 'D') --
+	// The live UE 5.6 delete bug was NOT a parse/classify bug — it was that the file
+	// was still ON DISK when the Delete worker staged it, so `stage` recorded nothing
+	// and `status --scan` had no `D` row (see delete-probe finding + the fixed Delete
+	// worker, which now removes the file from disk FIRST). This gate proves the OTHER
+	// half of the contract: once the CLI DOES emit a staged/unstaged `D` row (which it
+	// only does for a file already gone from disk), the deleted-tracked file classifies
+	// as Deleted (=> UE "Marked for delete", CanCheckIn/CanDelete true), and — critically
+	// — it STAYS Deleted across a status refresh instead of being reclassified
+	// tracked-clean-and-restored (a missing file + a `D` row must never map to Unchanged).
+	{
+		std::printf("classify: deleted-tracked file (Marked for delete)\n");
+
+		auto UeIsSourceControlled = [](EWorkingClass c) { return c != EWorkingClass::NotControlled; };
+		auto UeCanAdd            = [](EWorkingClass c) { return c == EWorkingClass::NotControlled; };
+
+		// Real `status --scan` shape after a staged delete (the exact bytes the live CLI
+		// emits — staged rows carry the load-bearing trailing space, §4.1 step 6a).
+		const std::string StagedDelete =
+			"Repository 019f5d4b366272b1a891a09ed89eefb4\n"
+			"On branch main revision 2 -> 2feadcbf4f800eff24295b369f40360aed8ca86b5911790bd53a1410ab095563\n"
+			"Changes staged for commit:\n"
+			"D Content/IA_Test.uasset \n"
+			"Tracked changes: 1 deleted\n";
+		FStatus sd = ParseStatus(StagedDelete);
+		Check(sd.Staged.size() == 1 && sd.Staged[0].Code == 'D', "staged 'D' row parsed");
+		Check(sd.Staged.size() == 1 && sd.Staged[0].Path == "Content/IA_Test.uasset", "staged D path (trailing space trimmed)");
+
+		// The file is GONE from disk (onDisk=false) — must classify Deleted, NOT
+		// reclassified as tracked-clean/NotControlled and restored.
+		EWorkingClass cDelGone = ClassifyWorkingCopy(sd, "Content/IA_Test.uasset", /*onDisk*/false);
+		Check(cDelGone == EWorkingClass::Deleted, "staged 'D' + not-on-disk -> Deleted (Marked for delete)");
+		Check(UeIsSourceControlled(cDelGone) && !UeCanAdd(cDelGone),
+		      "deleted -> IsSourceControlled (CanCheckIn/CanDelete), not CanAdd");
+
+		// Case-insensitive + slash-normalized path match (Windows editor paths).
+		EWorkingClass cDelCase = ClassifyWorkingCopy(sd, "content\\ia_test.uasset", /*onDisk*/false);
+		Check(cDelCase == EWorkingClass::Deleted, "deleted classify is case/slash-insensitive");
+
+		// A staged 'D' still wins even in the (unexpected) case the file reappears on
+		// disk — the staged section has priority over the on-disk tracked-clean fallback,
+		// so a refresh never silently drops the pending deletion.
+		EWorkingClass cDelBack = ClassifyWorkingCopy(sd, "Content/IA_Test.uasset", /*onDisk*/true);
+		Check(cDelBack == EWorkingClass::Deleted, "staged 'D' wins over on-disk presence");
+
+		// UNSTAGED delete row (a delete not yet staged) also classifies Deleted.
+		const std::string UnstagedDelete =
+			"Repository 019f5d4b366272b1a891a09ed89eefb4\n"
+			"On branch main revision 2 -> 2feadcbf4f800eff24295b369f40360aed8ca86b5911790bd53a1410ab095563\n"
+			"Changes not staged for commit:\n"
+			"D Content/IA_Test.uasset\n";
+		FStatus ud = ParseStatus(UnstagedDelete);
+		EWorkingClass cUnstagedDel = ClassifyWorkingCopy(ud, "Content/IA_Test.uasset", /*onDisk*/false);
+		Check(cUnstagedDel == EWorkingClass::Deleted, "unstaged 'D' -> Deleted");
+	}
+
 	// ---- locks: with a lock (owner sentinel; ignore stray events) ----------
 	{
 		std::printf("lock-query/json-with-locks\n");
