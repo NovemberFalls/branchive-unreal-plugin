@@ -85,10 +85,17 @@ private:
 	void RunLoreLogin(const FString& RemoteUrl, const FString& AuthUrl, const FString& Jwt, const FString& RepoPath) const;
 	void RebindWorkspacePin(const FString& RepoPath, const FString& Jwt) const;
 
+	// The actual token mint (POST /auth/lore-token -> `lore login` -> §4.3 pin rebind ->
+	// arm refresh). BUG1: run OFF the worker thread from EnsureCloudAuth so it never
+	// blocks a source-control op; guarded by bMintInFlight so only one runs at a time.
+	void MintCloudTokenBlocking(const FString& RemoteUrl, const FString& RepoPath, const FString& Bearer);
+
 	// BUG1 fast-path: true when the CLI's AMBIENT identity already matches the
-	// signed-in user, so the /auth/lore-token mint + `lore login` would be a
-	// redundant round-trip to the same identity. Best-effort — any probe failure
-	// returns false (fall through to the short-timeout, best-effort mint).
+	// signed-in user — matched by STABLE USER ID (the /auth/me identity.sub ==
+	// the CLI's authUserInfo.userId), with email only as a fallback. When true, the
+	// /auth/lore-token mint + `lore login` would be a redundant round-trip to the same
+	// identity. Best-effort — any probe failure returns false (fall through to the
+	// non-blocking background mint).
 	bool AmbientIdentityMatchesSignedIn(const FString& RepoPath) const;
 
 	static FString BuildAuthUrl(const FString& Base, const FString& Challenge, const FString& RedirectUri);
@@ -105,6 +112,9 @@ private:
 
 	FTSTicker::FDelegateHandle RefreshHandle;
 	FThreadSafeBool bSignInInFlight{ false };
+	// BUG1: at most one background token mint runs per editor (EnsureCloudAuth fires it
+	// fire-and-forget so the op never waits on the mint). Cleared when the mint finishes.
+	FThreadSafeBool bMintInFlight{ false };
 
 	// In-memory cache of "a bearer is at rest" so the per-frame Slate UI attributes
 	// never hit the OS keystore (DPAPI/Keychain). Seeded once in the ctor.

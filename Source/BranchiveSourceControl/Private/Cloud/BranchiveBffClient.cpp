@@ -120,7 +120,7 @@ FString FBranchiveBffClient::DefaultUserAgent()
 	// PlatformName() is ANSI (const char*) — convert to an FString first, then format
 	// (%s wants a TCHAR*; the checked-format-string macro rejects a raw char/char*).
 	const FString Platform = ANSI_TO_TCHAR(FPlatformProperties::PlatformName());
-	return FString::Printf(TEXT("Branchive-UE5/0.3.3 (%s)"), *Platform);
+	return FString::Printf(TEXT("Branchive-UE5/0.3.4 (%s)"), *Platform);
 }
 
 FTokenExchangeResult FBranchiveBffClient::ExchangeCode(const FString& Code, const FString& CodeVerifier) const
@@ -192,10 +192,21 @@ FMeResult FBranchiveBffClient::Me(const FString& Bearer) const
 		Result.Error = TEXT("Not signed in to Branchive Cloud.");
 		return Result;
 	}
-	FString Name, Email, Handle;
+	FString UserId, Name, Email, Handle;
+	// The stable user id is `identity.sub` (server: u.branchive_user_id). Accept a
+	// couple of defensive aliases so a schema tweak can't silently drop it — this id
+	// is what powers the BUG1 skip-the-mint fast-path.
+	if (!(*IdObj)->TryGetStringField(TEXT("sub"), UserId))
+	{
+		if (!(*IdObj)->TryGetStringField(TEXT("id"), UserId))
+		{
+			(*IdObj)->TryGetStringField(TEXT("branchive_user_id"), UserId);
+		}
+	}
 	(*IdObj)->TryGetStringField(TEXT("name"), Name);
 	(*IdObj)->TryGetStringField(TEXT("email"), Email);
 	(*IdObj)->TryGetStringField(TEXT("handle"), Handle);
+	Result.Identity.UserId = UserId;
 	Result.Identity.Email = Email;
 	Result.Identity.Handle = Handle;
 	Result.Identity.Name = Name.IsEmpty() ? (Email.IsEmpty() ? TEXT("Branchive User") : Email) : Name;

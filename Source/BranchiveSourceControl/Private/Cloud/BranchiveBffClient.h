@@ -16,6 +16,12 @@
 
 struct FBranchiveIdentity
 {
+	// Stable Branchive user id (the `/auth/me` identity.sub, e.g.
+	// "usr_fbb8ccf7c60cc9cc20111338"). This is the SAME value the ambient `lore`
+	// CLI reports as authUserInfo.userId, so it — NOT email — is the reliable key
+	// for the "skip the redundant token mint" fast-path (BUG1): email may be blank
+	// or differ between the BFF profile and the CLI's ambient identity.
+	FString UserId;
 	FString Name;
 	FString Email;
 	FString Handle;

@@ -309,10 +309,12 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 	const FString Bearer = ToF(BearerStd);
 
 	// BUG1 fast-path — SKIP the whole mint when the CLI is ALREADY authenticated as
-	// the signed-in user. The mint's only job is to re-attribute `lore` ops to that
-	// identity; if the ambient CLI identity already matches, the /auth/lore-token +
-	// `lore login` round-trip is pure redundant latency (and the exact thing that
-	// hung 30s in the smoke test). Best-effort: a failed probe just falls through.
+	// the signed-in user (matched by stable user id; see AmbientIdentityMatchesSignedIn).
+	// The mint's only job is to re-attribute `lore` ops to that identity; if the ambient
+	// CLI identity already matches, the /auth/lore-token + `lore login` round-trip is
+	// pure redundant latency (the exact thing that hung ~8s in the live log). This is the
+	// steady state after the first op, so it makes cloud ops proceed with ZERO extra
+	// network. Best-effort: a failed probe just falls through to the background mint.
 	if (AmbientIdentityMatchesSignedIn(RepoPath))
 	{
 		UE_LOG(LogBranchiveSourceControl, Verbose,
@@ -320,6 +322,28 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 		return;
 	}
 
+	// A mint IS genuinely needed (the ambient identity differs, or couldn't be probed).
+	// BUG1 — do it OFF the worker thread so the op NEVER blocks on /auth/lore-token +
+	// `lore login`. The op proceeds IMMEDIATELY on the ambient CLI auth (which already
+	// does the real work); the mint's re-attribution + workspace-pin rebind land for the
+	// NEXT op, after which the fast-path above skips the mint entirely. An in-flight guard
+	// keeps at most one background mint running per editor so bursts of ops can't pile up.
+	if (bMintInFlight.AtomicSet(true))
+	{
+		return; // a background mint is already running
+	}
+	const FString RemoteCopy = RemoteUrl;
+	const FString RepoCopy = RepoPath;
+	const FString BearerCopy = Bearer;
+	Async(EAsyncExecution::Thread, [this, RemoteCopy, RepoCopy, BearerCopy]()
+	{
+		MintCloudTokenBlocking(RemoteCopy, RepoCopy, BearerCopy);
+		bMintInFlight = false;
+	});
+}
+
+void FBranchiveCloudAuth::MintCloudTokenBlocking(const FString& RemoteUrl, const FString& RepoPath, const FString& Bearer)
+{
 	const FLoreTokenResult Lt = FBranchiveBffClient(BffBaseUrl()).LoreToken(Bearer, RemoteUrl);
 	if (Lt.bUnauthorized)
 	{
@@ -331,7 +355,7 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 		// BUG1 best-effort — a slow/unavailable /auth/lore-token must NEVER fail the
 		// op. The ambient CLI auth already does the real work (lock/commit/push); the
 		// mint is only an attribution nicety. Warn (so the prod BFF timeout is visible)
-		// and CONTINUE — the op proceeds against the ambient auth.
+		// and CONTINUE — the op already proceeded against the ambient auth.
 		UE_LOG(LogBranchiveSourceControl, Warning,
 			TEXT("Branchive ensureCloudAuth: /auth/lore-token unavailable (%s); continuing on the ambient CLI auth."),
 			*Lt.Error);
@@ -351,19 +375,24 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 
 bool FBranchiveCloudAuth::AmbientIdentityMatchesSignedIn(const FString& RepoPath) const
 {
-	// Need a signed-in identity (email) to compare the ambient CLI identity against.
-	FString SignedInEmail;
+	// Need a signed-in identity to compare the ambient CLI identity against. Match by
+	// STABLE USER ID first (the /auth/me identity.sub == the CLI's authUserInfo.userId);
+	// email is only a fallback — it may be blank or differ between the BFF profile and
+	// the CLI, which is exactly why the pre-0.3.4 email-only compare silently failed and
+	// let every op hang on the redundant /auth/lore-token mint.
+	FString SignedInUserId, SignedInEmail;
 	{
 		FScopeLock Lock(&StateMutex);
 		if (!bHasIdentity)
 		{
 			return false;
 		}
+		SignedInUserId = Identity.UserId;
 		SignedInEmail = Identity.Email;
 	}
-	if (SignedInEmail.IsEmpty())
+	if (SignedInUserId.IsEmpty() && SignedInEmail.IsEmpty())
 	{
-		return false;
+		return false; // nothing to compare against -> can't prove a match -> don't skip
 	}
 
 	// Probe the CLI's ambient identity cheaply. An authenticated `lore lock query
@@ -380,7 +409,7 @@ bool FBranchiveCloudAuth::AmbientIdentityMatchesSignedIn(const FString& RepoPath
 	}
 
 	const BranchiveLore::FAuthUserInfo Info = BranchiveLore::ParseAuthUserInfo(ToU8(Res.StdOut));
-	return BranchiveLore::AmbientMatchesSignedIn(Info, ToU8(SignedInEmail));
+	return BranchiveLore::AmbientMatchesSignedIn(Info, ToU8(SignedInUserId), ToU8(SignedInEmail));
 }
 
 void FBranchiveCloudAuth::RunLoreLogin(const FString& RemoteUrl, const FString& AuthUrl, const FString& Jwt, const FString& RepoPath) const

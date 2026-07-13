@@ -394,24 +394,54 @@ namespace BranchiveLore
 		return Out;
 	}
 
-	bool AmbientMatchesSignedIn(const FAuthUserInfo& Ambient, const std::string& SignedInEmail)
+	// Case-insensitive equality for two non-empty ASCII strings (emails).
+	static bool EqualsNoCase(const std::string& A, const std::string& B)
 	{
-		if (!Ambient.bFound || Ambient.Email.empty() || SignedInEmail.empty())
+		if (A.size() != B.size())
 		{
 			return false;
 		}
-		if (Ambient.Email.size() != SignedInEmail.size())
+		for (size_t i = 0; i < A.size(); ++i)
 		{
-			return false;
-		}
-		for (size_t i = 0; i < SignedInEmail.size(); ++i)
-		{
-			if (LowerAscii(Ambient.Email[i]) != LowerAscii(SignedInEmail[i]))
+			if (LowerAscii(A[i]) != LowerAscii(B[i]))
 			{
 				return false;
 			}
 		}
 		return true;
+	}
+
+	bool AmbientMatchesSignedIn(const FAuthUserInfo& Ambient,
+	                            const std::string& SignedInUserId,
+	                            const std::string& SignedInEmail)
+	{
+		if (!Ambient.bFound)
+		{
+			return false;
+		}
+
+		// PRIMARY: the stable user id. When both sides have one, it decides outright —
+		// a mismatch here is a definitive "different user", so we do NOT fall through to
+		// email. Ids come from the same server value, so an exact (byte) compare is right.
+		if (!Ambient.UserId.empty() && !SignedInUserId.empty())
+		{
+			return Ambient.UserId == SignedInUserId;
+		}
+
+		// FALLBACK: email (case-insensitive), only when an id is unavailable on either
+		// side (e.g. an older CLI/BFF that doesn't surface the id).
+		if (!Ambient.Email.empty() && !SignedInEmail.empty())
+		{
+			return EqualsNoCase(Ambient.Email, SignedInEmail);
+		}
+
+		return false;
+	}
+
+	bool AmbientMatchesSignedIn(const FAuthUserInfo& Ambient, const std::string& SignedInEmail)
+	{
+		// Email-only back-compat: no signed-in id supplied -> straight to the email fallback.
+		return AmbientMatchesSignedIn(Ambient, std::string(), SignedInEmail);
 	}
 
 	// ------------------------------------------------------------- file history

@@ -211,7 +211,8 @@ int main(int argc, char** argv)
 		FAuthUserInfo none = ParseAuthUserInfo(ReadFile(P("lock-query/json-with-locks.stdout.txt")));
 		Check(!none.bFound, "auth-less lock-query has no authUserInfo (bFound=false)");
 
-		// Decision: same identity (case-insensitive email) -> SKIP the mint.
+		// Decision (email-only back-compat overload): same identity (case-insensitive
+		// email) -> SKIP the mint.
 		Check(AmbientMatchesSignedIn(a, "lenboord@gmail.com"), "exact email match -> skip mint");
 		Check(AmbientMatchesSignedIn(b, "user@example.com"), "case-insensitive email match -> skip mint");
 		// Different identity, or missing data -> DO mint (fall through).
@@ -220,6 +221,40 @@ int main(int argc, char** argv)
 		Check(!AmbientMatchesSignedIn(a, ""), "empty signed-in email -> do not skip");
 		FAuthUserInfo noEmail; noEmail.bFound = true; noEmail.UserId = "usr_x";
 		Check(!AmbientMatchesSignedIn(noEmail, "lenboord@gmail.com"), "ambient without email -> do not skip");
+
+		// ---- BUG1 (0.3.4): match by STABLE USER ID, email as fallback -------
+		// This is the actual fix: the live hang was an EMAIL compare that failed
+		// (the /auth/me identity may carry no email, or a different one) even though
+		// the ambient CLI id and the signed-in id were the SAME "usr_..." token.
+
+		// (a) Same id -> SKIP, even when the signed-in EMAIL is blank (the exact prod
+		//     case that used to hang: @handle-only /auth/me, no email).
+		Check(AmbientMatchesSignedIn(a, "usr_fbb8ccf7c60cc9cc20111338", ""),
+		      "id==id with blank signed-in email -> skip mint (the fix)");
+
+		// (b) Same id -> SKIP even if the emails DIFFER (id is authoritative).
+		Check(AmbientMatchesSignedIn(a, "usr_fbb8ccf7c60cc9cc20111338", "stale-different@x.com"),
+		      "id==id with differing email -> skip (id is primary)");
+
+		// (c) Different id -> DO mint, even if the EMAILS happen to match (id wins).
+		Check(!AmbientMatchesSignedIn(a, "usr_someone_else", "lenboord@gmail.com"),
+		      "id!=id must NOT skip even when emails match (id is authoritative)");
+
+		// (d) Id missing on the signed-in side -> fall back to email (still skips).
+		Check(AmbientMatchesSignedIn(a, "", "LENBOORD@gmail.com"),
+		      "no signed-in id -> email fallback (case-insensitive) -> skip");
+
+		// (e) Id missing on the AMBIENT side -> fall back to email.
+		FAuthUserInfo idlessAmbient; idlessAmbient.bFound = true; idlessAmbient.Email = "user@example.com";
+		Check(AmbientMatchesSignedIn(idlessAmbient, "usr_signed_in", "user@example.com"),
+		      "ambient has no id -> email fallback -> skip");
+		Check(!AmbientMatchesSignedIn(idlessAmbient, "usr_signed_in", "other@example.com"),
+		      "ambient has no id + email differs -> do not skip");
+
+		// (f) Both keys empty / not found -> never skip.
+		Check(!AmbientMatchesSignedIn(a, "", ""), "no id and no email -> do not skip");
+		Check(!AmbientMatchesSignedIn(none, "usr_x", "user@example.com"),
+		      "ambient not found -> do not skip regardless of signed-in keys");
 	}
 
 	// ---- error taxonomy (§7) ----------------------------------------------

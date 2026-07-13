@@ -153,10 +153,22 @@ namespace BranchiveLore
 	// Never throws.
 	FAuthUserInfo ParseAuthUserInfo(const std::string& StdoutText);
 
-	// The "skip the /auth/lore-token mint" decision (BUG1): true iff the CLI's
-	// ambient identity is present AND its email matches the signed-in user's email
-	// (case-insensitive). Empty on either side => false (fall through to the mint).
+	// The "skip the /auth/lore-token mint" decision (BUG1), matched by STABLE USER ID
+	// with email as a fallback:
+	//   * If BOTH sides carry a non-empty user id, the id is authoritative — equal =>
+	//     skip; different => do NOT skip (even if the emails happen to match). This is
+	//     the reliable path: the ambient CLI's authUserInfo.userId and the signed-in
+	//     /auth/me identity.sub are the same "usr_..." token.
+	//   * If an id is missing on EITHER side, fall back to case-insensitive email
+	//     equality (the pre-0.3.4 behavior).
+	//   * Empty on both keys, or ambient not found => false (fall through to the mint).
 	// Pure + engine-independent so the decision is unit-testable without a live BFF.
+	bool AmbientMatchesSignedIn(const FAuthUserInfo& Ambient,
+	                            const std::string& SignedInUserId,
+	                            const std::string& SignedInEmail);
+
+	// Back-compat email-only overload (delegates with an empty id): preserved so older
+	// call sites / tests keep the exact pre-0.3.4 email-match semantics.
 	bool AmbientMatchesSignedIn(const FAuthUserInfo& Ambient, const std::string& SignedInEmail);
 
 	// --- file history (§4.12) ----------------------------------------------
