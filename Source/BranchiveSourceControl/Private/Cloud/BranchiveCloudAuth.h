@@ -85,6 +85,12 @@ private:
 	void RunLoreLogin(const FString& RemoteUrl, const FString& AuthUrl, const FString& Jwt, const FString& RepoPath) const;
 	void RebindWorkspacePin(const FString& RepoPath, const FString& Jwt) const;
 
+	// BUG1 fast-path: true when the CLI's AMBIENT identity already matches the
+	// signed-in user, so the /auth/lore-token mint + `lore login` would be a
+	// redundant round-trip to the same identity. Best-effort — any probe failure
+	// returns false (fall through to the short-timeout, best-effort mint).
+	bool AmbientIdentityMatchesSignedIn(const FString& RepoPath) const;
+
 	static FString BuildAuthUrl(const FString& Base, const FString& Challenge, const FString& RedirectUri);
 	void NotifyGameThread(const FString& Title, const FString& Message, bool bError) const;
 

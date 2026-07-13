@@ -37,8 +37,16 @@ public:
 	{
 	}
 
-	/** Blocking run. Safe to call from a background (worker) thread. */
-	FLoreCliResult Run(const TArray<FString>& Args, bool bAppendRepository = true) const;
+	/**
+	 * Blocking run. Safe to call from a background (worker) thread.
+	 *
+	 * TimeoutSeconds <= 0 (the default) runs the classic un-bounded ExecProcess path.
+	 * TimeoutSeconds > 0 spawns via CreateProc and TERMINATES the child if it exceeds
+	 * the budget — used for the remote-dialing, JWT-bearing `lore login` so a slow
+	 * server can never wedge a source-control op (BUG1). On timeout the result carries
+	 * ReturnCode = -1 (bSpawnFailed stays false), i.e. Ok() == false.
+	 */
+	FLoreCliResult Run(const TArray<FString>& Args, bool bAppendRepository = true, float TimeoutSeconds = 0.0f) const;
 
 	const FString& GetBinaryPath() const { return BinaryPath; }
 	const FString& GetRepoPath() const { return RepoPath; }

@@ -90,8 +90,13 @@ bool FBranchiveSourceControlState::IsCheckedOutOther(FString* Who) const
 
 bool FBranchiveSourceControlState::CanCheckout() const
 {
-	// Can acquire a lock if the file is known and not already locked by anyone.
-	return WorkingCopyState != EBranchiveWorkingCopyState::Unknown
+	// A lock (== UE "check out", contract §5.3) only makes sense on a TRACKED file.
+	// A brand-new/untracked (NotControlled) or Unknown/Ignored file must be
+	// Mark-for-Add'ed, NOT checked out (BUG3) — `lock acquire` on it fails with a
+	// confusing "not found". IsSourceControlled() excludes exactly those states, so
+	// returning it here makes UE offer "Mark for Add" (CanAdd) for new assets and
+	// "Check Out" only for files that are actually in revision control.
+	return IsSourceControlled()
 	    && !bLockedBySelf && !bLockedByOther;
 }
 

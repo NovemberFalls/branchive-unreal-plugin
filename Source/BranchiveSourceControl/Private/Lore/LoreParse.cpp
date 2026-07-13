@@ -307,6 +307,59 @@ namespace BranchiveLore
 		return Out;
 	}
 
+	// ------------------------------------------------------- ambient identity
+
+	FAuthUserInfo ParseAuthUserInfo(const std::string& StdoutText)
+	{
+		FAuthUserInfo Out;
+		std::vector<std::string> Lines;
+		SplitLines(StdoutText, Lines);
+
+		for (const std::string& Raw : Lines)
+		{
+			const std::string Line = Trim(Raw);
+			if (Line.empty()) continue;
+
+			// Only the authenticated-identity event. An auth-less server never emits
+			// this (its stream carries only "No auth endpoint available").
+			if (Line.find("\"tagName\":\"authUserInfo\"") == std::string::npos)
+			{
+				continue;
+			}
+
+			// ExtractJsonString scans the WHOLE line for "<key>":"<value>", so it
+			// tolerates both the flat and the {"data":{...}} nesting shapes.
+			std::string UserId, Email;
+			ExtractJsonString(Line, "userId", UserId);
+			ExtractJsonString(Line, "email", Email);
+			Out.UserId = UserId;
+			Out.Email = Email;
+			Out.bFound = true;
+			return Out; // first authUserInfo wins
+		}
+		return Out;
+	}
+
+	bool AmbientMatchesSignedIn(const FAuthUserInfo& Ambient, const std::string& SignedInEmail)
+	{
+		if (!Ambient.bFound || Ambient.Email.empty() || SignedInEmail.empty())
+		{
+			return false;
+		}
+		if (Ambient.Email.size() != SignedInEmail.size())
+		{
+			return false;
+		}
+		for (size_t i = 0; i < SignedInEmail.size(); ++i)
+		{
+			if (LowerAscii(Ambient.Email[i]) != LowerAscii(SignedInEmail[i]))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
 	// ------------------------------------------------------------- file history
 
 	// Match a "Key   : value" field line (already trimmed). On match, returns true

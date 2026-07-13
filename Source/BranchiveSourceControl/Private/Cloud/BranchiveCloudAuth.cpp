@@ -8,6 +8,7 @@
 #include "Lore/LoreConfigPin.h"
 #include "Lore/LoreLoopback.h"
 #include "Lore/LorePkce.h"
+#include "Lore/LoreParse.h"
 #include "Lore/LoreCli.h"
 
 #include "Async/Async.h"
@@ -35,6 +36,11 @@ namespace
 	constexpr int32  kLoopbackTimeoutMs = 45 * 1000;        // §2.1 — outlast Google consent
 	constexpr int32  kUnrealPortMin = 47500;                // §2.1 UE range
 	constexpr int32  kUnrealPortMax = 47599;
+
+	// BUG1 budgets: the ambient-identity probe and the JWT-bearing `lore login` are
+	// both remote-dialing; bound them so a slow server can never wedge the op.
+	constexpr float  kAmbientProbeTimeoutSeconds = 6.0f;    // `lore lock query --json`
+	constexpr float  kLoreLoginTimeoutSeconds    = 8.0f;    // `lore login ...`
 
 	FString ToF(const std::string& S) { return FString(UTF8_TO_TCHAR(S.c_str())); }
 	std::string ToU8(const FString& S) { return std::string(TCHAR_TO_UTF8(*S)); }
@@ -302,6 +308,18 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 	}
 	const FString Bearer = ToF(BearerStd);
 
+	// BUG1 fast-path — SKIP the whole mint when the CLI is ALREADY authenticated as
+	// the signed-in user. The mint's only job is to re-attribute `lore` ops to that
+	// identity; if the ambient CLI identity already matches, the /auth/lore-token +
+	// `lore login` round-trip is pure redundant latency (and the exact thing that
+	// hung 30s in the smoke test). Best-effort: a failed probe just falls through.
+	if (AmbientIdentityMatchesSignedIn(RepoPath))
+	{
+		UE_LOG(LogBranchiveSourceControl, Verbose,
+			TEXT("Branchive ensureCloudAuth: CLI already authenticated as the signed-in user; skipping the token mint."));
+		return;
+	}
+
 	const FLoreTokenResult Lt = FBranchiveBffClient(BffBaseUrl()).LoreToken(Bearer, RemoteUrl);
 	if (Lt.bUnauthorized)
 	{
@@ -310,8 +328,13 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 	}
 	if (!Lt.bSuccess)
 	{
-		UE_LOG(LogBranchiveSourceControl, Verbose,
-			TEXT("Branchive ensureCloudAuth: lore-token unavailable, continuing on ambient auth (%s)"), *Lt.Error);
+		// BUG1 best-effort — a slow/unavailable /auth/lore-token must NEVER fail the
+		// op. The ambient CLI auth already does the real work (lock/commit/push); the
+		// mint is only an attribution nicety. Warn (so the prod BFF timeout is visible)
+		// and CONTINUE — the op proceeds against the ambient auth.
+		UE_LOG(LogBranchiveSourceControl, Warning,
+			TEXT("Branchive ensureCloudAuth: /auth/lore-token unavailable (%s); continuing on the ambient CLI auth."),
+			*Lt.Error);
 		return;
 	}
 
@@ -324,6 +347,40 @@ void FBranchiveCloudAuth::EnsureCloudAuth(const FString& RemoteUrl, const FStrin
 		LastCloudRepoPath = RepoPath;
 	}
 	ArmRefresh(ComputeRefreshDelaySeconds(Lt.ExpiresInSeconds));
+}
+
+bool FBranchiveCloudAuth::AmbientIdentityMatchesSignedIn(const FString& RepoPath) const
+{
+	// Need a signed-in identity (email) to compare the ambient CLI identity against.
+	FString SignedInEmail;
+	{
+		FScopeLock Lock(&StateMutex);
+		if (!bHasIdentity)
+		{
+			return false;
+		}
+		SignedInEmail = Identity.Email;
+	}
+	if (SignedInEmail.IsEmpty())
+	{
+		return false;
+	}
+
+	// Probe the CLI's ambient identity cheaply. An authenticated `lore lock query
+	// --json` carries an "authUserInfo" event with the logged-in user's id + email.
+	// Bounded so a slow server can't stall the op; NOT --branch (a bare query is
+	// enough to surface authUserInfo, and needs no resolved branch).
+	FLoreCli Cli(ResolveLoreBinary(), RepoPath);
+	const FLoreCliResult Res = Cli.Run(
+		{ TEXT("lock"), TEXT("query"), TEXT("--json") },
+		/*bAppendRepository=*/true, /*TimeoutSeconds=*/kAmbientProbeTimeoutSeconds);
+	if (Res.bSpawnFailed)
+	{
+		return false;
+	}
+
+	const BranchiveLore::FAuthUserInfo Info = BranchiveLore::ParseAuthUserInfo(ToU8(Res.StdOut));
+	return BranchiveLore::AmbientMatchesSignedIn(Info, ToU8(SignedInEmail));
 }
 
 void FBranchiveCloudAuth::RunLoreLogin(const FString& RemoteUrl, const FString& AuthUrl, const FString& Jwt, const FString& RepoPath) const
@@ -340,7 +397,9 @@ void FBranchiveCloudAuth::RunLoreLogin(const FString& RemoteUrl, const FString& 
 		TEXT("--token"), Jwt,
 		TEXT("--non-interactive"),
 	};
-	const FLoreCliResult Res = Cli.Run(Args, /*bAppendRepository=*/false);
+	// BUG1 — bound `lore login` (remote-dialing, JWT-bearing): on a wedged server it
+	// is terminated at the budget instead of blocking the worker thread indefinitely.
+	const FLoreCliResult Res = Cli.Run(Args, /*bAppendRepository=*/false, /*TimeoutSeconds=*/kLoreLoginTimeoutSeconds);
 	if (!Res.Ok())
 	{
 		// NEVER log Args (they carry the JWT). stderr does not carry the token.

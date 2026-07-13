@@ -410,23 +410,74 @@ bool FBranchiveCheckOutWorker::Execute(FBranchiveSourceControlCommand& Command)
 	MaybeEnsureCloudAuth(Command);
 	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
 
-	// CheckOut == lock acquire (contract §5.3 / §4.15).
-	TArray<FString> Args = { TEXT("lock"), TEXT("acquire") };
-	Args.Append(Command.Files);
-	const FLoreCliResult Res = Cli.Run(Args);
-	if (!Res.Ok())
+	// BUG3 — classify first. CheckOut == lock acquire (§5.3 / §4.15), but a lock
+	// only applies to a TRACKED file. A brand-new/untracked asset (e.g. the IA_Test
+	// that produced "Unable to Check Out ... That branch does not exist" in the
+	// smoke) must be Mark-for-Add'ed instead — `lock acquire` on a file the repo
+	// doesn't know returns a confusing "not found". One status scan partitions them.
+	TArray<FBranchiveResolvedFileState> Classified;
+	FString ScanBranch; bool bScanCurrent = true; FString ScanErr;
+	const bool bScanned = ComputeStates(Cli, Command.PathToRepositoryRoot, Command.Files,
+		Command.SessionLockedFiles, Classified, ScanBranch, bScanCurrent, ScanErr);
+
+	TArray<FString> TrackedFiles;   // -> lock acquire (real check out)
+	TArray<FString> UntrackedFiles; // -> stage (mark for add)
+	if (bScanned)
 	{
-		const BranchiveLore::EErrorClass Ec = BranchiveLore::ClassifyError(
-			Res.ReturnCode, Res.bSpawnFailed, ToU8(Res.StdErr), ToU8(Res.StdOut));
-		Command.ErrorMessages.Add(ToF(BranchiveLore::FriendlyMessage(Ec)));
-		return false;
+		for (const FBranchiveResolvedFileState& RS : Classified)
+		{
+			if (RS.State == EBranchiveWorkingCopyState::NotControlled)
+			{
+				UntrackedFiles.Add(RS.AbsFilename);
+			}
+			else
+			{
+				TrackedFiles.Add(RS.AbsFilename);
+			}
+		}
+	}
+	else
+	{
+		// Scan failed — can't classify; preserve the prior behavior (treat as tracked).
+		TrackedFiles = Command.Files;
 	}
 
-	AcquiredLocks = Command.Files;
+	// Mark-for-add the untracked ones (`stage <file>`, §4.2). A new file has nothing
+	// to lock against yet — the lock is acquired at first check-in.
+	if (UntrackedFiles.Num() > 0)
+	{
+		TArray<FString> AddArgs = { TEXT("stage") };
+		AddArgs.Append(UntrackedFiles);
+		const FLoreCliResult AddRes = Cli.Run(AddArgs);
+		if (!AddRes.Ok())
+		{
+			const BranchiveLore::EErrorClass Ec = BranchiveLore::ClassifyError(
+				AddRes.ReturnCode, AddRes.bSpawnFailed, ToU8(AddRes.StdErr), ToU8(AddRes.StdOut));
+			Command.ErrorMessages.Add(ToF(BranchiveLore::FriendlyMessage(Ec)));
+			return false;
+		}
+		Command.InfoMessages.Add(TEXT("New asset(s) marked for add — a lock is acquired at first check-in."));
+	}
 
-	// Recompute states treating the just-acquired files as our own locks.
+	// Lock-acquire the tracked ones (the real "check out").
+	if (TrackedFiles.Num() > 0)
+	{
+		TArray<FString> Args = { TEXT("lock"), TEXT("acquire") };
+		Args.Append(TrackedFiles);
+		const FLoreCliResult Res = Cli.Run(Args);
+		if (!Res.Ok())
+		{
+			const BranchiveLore::EErrorClass Ec = BranchiveLore::ClassifyError(
+				Res.ReturnCode, Res.bSpawnFailed, ToU8(Res.StdErr), ToU8(Res.StdOut));
+			Command.ErrorMessages.Add(ToF(BranchiveLore::FriendlyMessage(Ec)));
+			return false;
+		}
+		AcquiredLocks = TrackedFiles;
+	}
+
+	// Recompute states treating the just-acquired (tracked) files as our own locks.
 	TSet<FString> Augmented = Command.SessionLockedFiles;
-	Augmented.Append(TSet<FString>(Command.Files));
+	Augmented.Append(TSet<FString>(TrackedFiles));
 	FString Error;
 	ComputeStates(Cli, Command.PathToRepositoryRoot, Command.Files, Augmented,
 		States, OutBranch, bOutIsCurrent, Error);

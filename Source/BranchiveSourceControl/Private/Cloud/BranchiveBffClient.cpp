@@ -15,6 +15,14 @@
 
 namespace
 {
+	// BUG1 — the best-effort Cloud-auth calls must never block a source-control op
+	// for the old 30s. `/auth/lore-token` (the Lore-JWT mint) and `/auth/me` (the
+	// identity check) both get a SHORT budget: a slow/unavailable BFF then falls
+	// through to the ambient CLI auth in single-digit seconds instead of 30. The
+	// interactive `/auth/token` code exchange keeps its longer budget (the user is
+	// actively waiting on the sign-in window there).
+	constexpr float kAuthShortTimeoutSeconds = 8.0f;
+
 	// A completed HTTP response, or a failure.
 	struct FSyncResponse
 	{
@@ -112,7 +120,7 @@ FString FBranchiveBffClient::DefaultUserAgent()
 	// PlatformName() is ANSI (const char*) — convert to an FString first, then format
 	// (%s wants a TCHAR*; the checked-format-string macro rejects a raw char/char*).
 	const FString Platform = ANSI_TO_TCHAR(FPlatformProperties::PlatformName());
-	return FString::Printf(TEXT("Branchive-UE5/0.3.1 (%s)"), *Platform);
+	return FString::Printf(TEXT("Branchive-UE5/0.3.2 (%s)"), *Platform);
 }
 
 FTokenExchangeResult FBranchiveBffClient::ExchangeCode(const FString& Code, const FString& CodeVerifier) const
@@ -164,7 +172,7 @@ FMeResult FBranchiveBffClient::Me(const FString& Bearer) const
 {
 	FMeResult Result;
 	const FSyncResponse R = SendBlocking(TEXT("GET"), BaseUrl + TEXT("/auth/me"),
-		DefaultUserAgent(), Bearer, FString(), 30.0f);
+		DefaultUserAgent(), Bearer, FString(), kAuthShortTimeoutSeconds);
 	if (R.Code == 401)
 	{
 		Result.bUnauthorized = true;
@@ -212,7 +220,7 @@ FLoreTokenResult FBranchiveBffClient::LoreToken(const FString& Bearer, const FSt
 	}
 
 	const FSyncResponse R = SendBlocking(TEXT("POST"), BaseUrl + TEXT("/auth/lore-token"),
-		DefaultUserAgent(), Bearer, Body, 30.0f);
+		DefaultUserAgent(), Bearer, Body, kAuthShortTimeoutSeconds);
 	if (R.Code == 401)
 	{
 		Result.bUnauthorized = true;

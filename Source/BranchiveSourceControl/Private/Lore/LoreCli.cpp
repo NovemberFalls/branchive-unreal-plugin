@@ -5,6 +5,7 @@
 #include "LoreBinaryResolve.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformMisc.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 
@@ -174,7 +175,7 @@ FString FLoreCli::ResolveBinaryPath(const FString& ConfiguredPath)
 #endif
 }
 
-FLoreCliResult FLoreCli::Run(const TArray<FString>& Args, bool bAppendRepository) const
+FLoreCliResult FLoreCli::Run(const TArray<FString>& Args, bool bAppendRepository, float TimeoutSeconds) const
 {
 	FLoreCliResult Result;
 
@@ -252,6 +253,89 @@ FLoreCliResult FLoreCli::Run(const TArray<FString>& Args, bool bAppendRepository
 	}
 
 	UE_LOG(LogBranchiveSourceControl, Verbose, TEXT("lore %s (cwd=%s)"), *RedactedLog, *Cwd);
+
+	// BUG1 — bounded path: spawn with pipes and TERMINATE the child if it blows its
+	// budget, so a slow remote can never wedge the (worker-thread) op. Used only when
+	// a caller passes TimeoutSeconds > 0 (currently the JWT-bearing `lore login`).
+	if (TimeoutSeconds > 0.0f)
+	{
+		void* OutRead = nullptr;  void* OutWrite = nullptr;
+		void* ErrRead = nullptr;  void* ErrWrite = nullptr;
+		if (!FPlatformProcess::CreatePipe(OutRead, OutWrite) ||
+			!FPlatformProcess::CreatePipe(ErrRead, ErrWrite))
+		{
+			if (OutRead || OutWrite) { FPlatformProcess::ClosePipe(OutRead, OutWrite); }
+			if (ErrRead || ErrWrite) { FPlatformProcess::ClosePipe(ErrRead, ErrWrite); }
+			Result.bSpawnFailed = true;
+			Result.ReturnCode = -1;
+			Result.StdErr = TEXT("Could not create pipes for a bounded lore invocation.");
+			UE_LOG(LogBranchiveSourceControl, Error, TEXT("Branchive: CreatePipe failed for a bounded lore run."));
+			return Result;
+		}
+
+		uint32 ProcId = 0;
+		FProcHandle Proc = FPlatformProcess::CreateProc(
+			*BinaryPath, *Params,
+			/*bLaunchDetached=*/false, /*bLaunchHidden=*/true, /*bLaunchReallyHidden=*/true,
+			&ProcId, /*PriorityModifier=*/0,
+			Cwd.IsEmpty() ? nullptr : *Cwd,
+			/*PipeWriteChild=*/OutWrite, /*PipeReadChild=*/nullptr, /*PipeStdErrChild=*/ErrWrite);
+
+		if (!Proc.IsValid())
+		{
+			FPlatformProcess::ClosePipe(OutRead, OutWrite);
+			FPlatformProcess::ClosePipe(ErrRead, ErrWrite);
+			Result.bSpawnFailed = true;
+			Result.ReturnCode = -1;
+			Result.StdErr = FString::Printf(TEXT("Failed to launch '%s'"), *BinaryPath);
+			UE_LOG(LogBranchiveSourceControl, Error, TEXT("Failed to launch lore binary '%s'"), *BinaryPath);
+			return Result;
+		}
+
+		FString OutStdT, OutErrT;
+		const double Deadline = FPlatformTime::Seconds() + double(TimeoutSeconds);
+		bool bTimedOut = false;
+		while (FPlatformProcess::IsProcRunning(Proc))
+		{
+			OutStdT += FPlatformProcess::ReadPipe(OutRead);
+			OutErrT += FPlatformProcess::ReadPipe(ErrRead);
+			if (FPlatformTime::Seconds() > Deadline)
+			{
+				FPlatformProcess::TerminateProc(Proc, /*KillTree=*/true);
+				bTimedOut = true;
+				break;
+			}
+			FPlatformProcess::Sleep(0.01f);
+		}
+		// Drain whatever is still buffered after exit/terminate.
+		OutStdT += FPlatformProcess::ReadPipe(OutRead);
+		OutErrT += FPlatformProcess::ReadPipe(ErrRead);
+
+		if (bTimedOut)
+		{
+			Result.bSpawnFailed = false; // it launched fine — it was just too slow
+			Result.ReturnCode = -1;      // Ok() == false -> callers treat as a failed op
+			Result.StdOut = OutStdT;
+			Result.StdErr = OutErrT.IsEmpty()
+				? FString::Printf(TEXT("lore timed out after %.0fs"), TimeoutSeconds)
+				: OutErrT;
+			UE_LOG(LogBranchiveSourceControl, Warning,
+				TEXT("Branchive: a lore invocation exceeded its %.0fs budget and was terminated."), TimeoutSeconds);
+		}
+		else
+		{
+			int32 TimedReturnCode = -1;
+			FPlatformProcess::GetProcReturnCode(Proc, &TimedReturnCode);
+			Result.ReturnCode = TimedReturnCode;
+			Result.StdOut = OutStdT;
+			Result.StdErr = OutErrT;
+		}
+
+		FPlatformProcess::CloseProc(Proc);
+		FPlatformProcess::ClosePipe(OutRead, OutWrite);
+		FPlatformProcess::ClosePipe(ErrRead, ErrWrite);
+		return Result;
+	}
 
 	int32 ReturnCode = -1;
 	FString OutStd, OutErr;

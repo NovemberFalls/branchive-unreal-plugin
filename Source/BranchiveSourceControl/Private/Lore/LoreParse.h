@@ -103,6 +103,30 @@ namespace BranchiveLore
 	// throws — a line that fails to parse is silently skipped.
 	std::vector<FLock> ParseLocksJson(const std::string& StdoutText);
 
+	// --- ambient CLI identity (BUG1: skip the redundant token mint) ---------
+
+	// The CLI's ambient authenticated identity, as carried by the "authUserInfo"
+	// NDJSON event an AUTHENTICATED cloud op (e.g. `lore lock query --json`) emits.
+	struct FAuthUserInfo
+	{
+		bool        bFound = false; // an "authUserInfo" event was present
+		std::string UserId;         // e.g. "usr_fbb8ccf7c60cc9cc20111338"
+		std::string Email;          // e.g. "user@example.com"
+	};
+
+	// Locate the first "authUserInfo" NDJSON event and extract its userId/email.
+	// Tolerant of field nesting (flat OR under a "data" object) — it only requires
+	// that "userId"/"email" appear as string values on that line. bFound=false when
+	// the CLI is not cloud-authenticated (an auth-less server emits no such event).
+	// Never throws.
+	FAuthUserInfo ParseAuthUserInfo(const std::string& StdoutText);
+
+	// The "skip the /auth/lore-token mint" decision (BUG1): true iff the CLI's
+	// ambient identity is present AND its email matches the signed-in user's email
+	// (case-insensitive). Empty on either side => false (fall through to the mint).
+	// Pure + engine-independent so the decision is unit-testable without a live BFF.
+	bool AmbientMatchesSignedIn(const FAuthUserInfo& Ambient, const std::string& SignedInEmail);
+
 	// --- file history (§4.12) ----------------------------------------------
 
 	struct FFileRevisionEntry

@@ -126,6 +126,41 @@ int main(int argc, char** argv)
 		Check(locks.empty(), "no locks in empty query");
 	}
 
+	// ---- ambient identity: authUserInfo parse + skip-mint decision (BUG1) --
+	{
+		std::printf("ambient identity (authUserInfo) + skip-mint decision\n");
+
+		// Flat shape: {"tagName":"authUserInfo","userId":"usr_...","email":"..."}
+		const std::string flat =
+			"{\"tagName\":\"lockFileQueryBegin\",\"data\":{\"count\":0}}\n"
+			"{\"tagName\":\"authUserInfo\",\"userId\":\"usr_fbb8ccf7c60cc9cc20111338\",\"email\":\"lenboord@gmail.com\"}\n"
+			"{\"tagName\":\"complete\",\"data\":{\"status\":0}}\n";
+		FAuthUserInfo a = ParseAuthUserInfo(flat);
+		Check(a.bFound, "authUserInfo found (flat)");
+		Check(a.UserId == "usr_fbb8ccf7c60cc9cc20111338", "userId extracted (flat)");
+		Check(a.Email == "lenboord@gmail.com", "email extracted (flat)");
+
+		// Nested "data" shape — ExtractJsonString scans the whole line, so it still works.
+		const std::string nested =
+			"{\"tagName\":\"authUserInfo\",\"data\":{\"userId\":\"usr_9\",\"email\":\"User@Example.com\"}}\n";
+		FAuthUserInfo b = ParseAuthUserInfo(nested);
+		Check(b.bFound && b.Email == "User@Example.com", "authUserInfo found (nested data)");
+
+		// The auth-less server fixture emits NO authUserInfo -> not found.
+		FAuthUserInfo none = ParseAuthUserInfo(ReadFile(P("lock-query/json-with-locks.stdout.txt")));
+		Check(!none.bFound, "auth-less lock-query has no authUserInfo (bFound=false)");
+
+		// Decision: same identity (case-insensitive email) -> SKIP the mint.
+		Check(AmbientMatchesSignedIn(a, "lenboord@gmail.com"), "exact email match -> skip mint");
+		Check(AmbientMatchesSignedIn(b, "user@example.com"), "case-insensitive email match -> skip mint");
+		// Different identity, or missing data -> DO mint (fall through).
+		Check(!AmbientMatchesSignedIn(a, "someone-else@gmail.com"), "different email -> do not skip");
+		Check(!AmbientMatchesSignedIn(none, "lenboord@gmail.com"), "no ambient identity -> do not skip");
+		Check(!AmbientMatchesSignedIn(a, ""), "empty signed-in email -> do not skip");
+		FAuthUserInfo noEmail; noEmail.bFound = true; noEmail.UserId = "usr_x";
+		Check(!AmbientMatchesSignedIn(noEmail, "lenboord@gmail.com"), "ambient without email -> do not skip");
+	}
+
 	// ---- error taxonomy (§7) ----------------------------------------------
 	{
 		std::printf("error taxonomy\n");
