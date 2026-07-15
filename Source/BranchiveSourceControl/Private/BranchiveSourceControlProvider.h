@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "ISourceControlProvider.h"
 #include "IBranchiveSourceControlWorker.h"
+#include "Misc/EngineVersionComparison.h"
 
 class FBranchiveSourceControlState;
 class FBranchiveSourceControlCommand;
@@ -47,8 +48,22 @@ public:
 	virtual bool UsesFileRevisions() const override;
 	virtual bool UsesSnapshots() const override;
 	virtual bool AllowsDiffAgainstDepot() const override;
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+	// UE 5.8 made these two `final` in ISourceControlProvider (they now carry a
+	// base default and are deprecated). On 5.4/5.6 they are pure-virtual, so we
+	// must still override them there. Compile the override only pre-5.8.
 	virtual TOptional<bool> IsAtLatestRevision() const override;
 	virtual TOptional<int> GetNumLocalChanges() const override;
+#else
+	// UE 5.8 added four new pure-virtuals to ISourceControlProvider (and turned the
+	// two above into `final`). HasChangesToSync / HasChangesToCheckIn are the direct
+	// replacements for IsAtLatestRevision / GetNumLocalChanges. None of these four
+	// exist pre-5.8, so they compile only on 5.8+.
+	virtual bool GetStateBranchAtIndex(int32 BranchIndex, FString& OutBranchName) const override;
+	virtual bool UsesSoftRevertOnDelete() const override;
+	virtual TOptional<bool> HasChangesToSync() const override;
+	virtual TOptional<bool> HasChangesToCheckIn() const override;
+#endif
 	virtual void Tick() override;
 	virtual TArray<TSharedRef<class ISourceControlLabel>> GetLabels(const FString& InMatchingSpec) const override;
 	virtual TArray<FSourceControlChangelistRef> GetChangelists(EStateCacheUsage::Type InStateCacheUsage) override;

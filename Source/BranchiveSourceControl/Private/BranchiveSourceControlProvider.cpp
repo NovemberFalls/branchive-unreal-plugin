@@ -289,8 +289,20 @@ bool FBranchiveSourceControlProvider::UsesCheckout() const { return true; }     
 bool FBranchiveSourceControlProvider::UsesFileRevisions() const { return true; }
 bool FBranchiveSourceControlProvider::UsesSnapshots() const { return false; }
 bool FBranchiveSourceControlProvider::AllowsDiffAgainstDepot() const { return true; }
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+// Pre-5.8 only: base declares these pure-virtual. On 5.8 they are `final`.
 TOptional<bool> FBranchiveSourceControlProvider::IsAtLatestRevision() const { return TOptional<bool>(); }
 TOptional<int> FBranchiveSourceControlProvider::GetNumLocalChanges() const { return TOptional<int>(); }
+#else
+// UE 5.8+: four new pure-virtuals. We expose no state-branch config and no
+// soft-revert-on-delete (return false). HasChangesToSync / HasChangesToCheckIn
+// answer "unknown" (unset TOptional) — matching the IsAtLatestRevision /
+// GetNumLocalChanges behaviour they replace.
+bool FBranchiveSourceControlProvider::GetStateBranchAtIndex(int32 BranchIndex, FString& OutBranchName) const { return false; }
+bool FBranchiveSourceControlProvider::UsesSoftRevertOnDelete() const { return false; }
+TOptional<bool> FBranchiveSourceControlProvider::HasChangesToSync() const { return TOptional<bool>(); }
+TOptional<bool> FBranchiveSourceControlProvider::HasChangesToCheckIn() const { return TOptional<bool>(); }
+#endif
 
 TSharedPtr<IBranchiveSourceControlWorker, ESPMode::ThreadSafe> FBranchiveSourceControlProvider::CreateWorker(const FName& InOperationName) const
 {

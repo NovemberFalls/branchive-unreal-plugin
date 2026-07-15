@@ -8,6 +8,7 @@
 #include "Features/IModularFeatures.h"
 #include "Misc/App.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Modules/ModuleManager.h"
 
 DEFINE_LOG_CATEGORY(LogBranchiveSourceControl);
@@ -48,7 +49,13 @@ void FBranchiveSourceControlModule::StartupModule()
 	// content browser / Slate are not ready this early).
 	CloudAuth = new FBranchiveCloudAuth();
 	ConflictMenu = new FBranchiveSourceControlMenu();
+	// UE 5.8 deprecated the direct `OnPostEngineInit` member in favour of the
+	// GetOnPostEngineInit() accessor (which does not exist pre-5.8).
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
 	PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddRaw(this, &FBranchiveSourceControlModule::OnPostEngineInit);
+#else
+	PostEngineInitHandle = FCoreDelegates::GetOnPostEngineInit().AddRaw(this, &FBranchiveSourceControlModule::OnPostEngineInit);
+#endif
 
 	UE_LOG(LogBranchiveSourceControl, Log, TEXT("Branchive source control module started (contract 2.0.0)."));
 }
@@ -69,7 +76,11 @@ void FBranchiveSourceControlModule::ShutdownModule()
 {
 	if (PostEngineInitHandle.IsValid())
 	{
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
 		FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
+#else
+		FCoreDelegates::GetOnPostEngineInit().Remove(PostEngineInitHandle);
+#endif
 		PostEngineInitHandle.Reset();
 	}
 

@@ -18,6 +18,7 @@
 #include "Math/UnrealMathUtility.h"
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Async/Async.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectHash.h"
@@ -368,7 +369,15 @@ namespace
 				if (RegistryModule != nullptr)
 				{
 					TArray<UObject*> ObjectsInPackage;
+					// UE 5.8 deprecated the bool `bIncludeNestedObjects` overload in favour
+					// of EGetObjectsFlags (Rocket promotes the deprecation to an error).
+					// false maps to EGetObjectsFlags::None. The enum overload does not exist
+					// pre-5.8, so keep the bool call there.
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
 					GetObjectsWithPackage(Package, ObjectsInPackage, /*bIncludeNestedObjects=*/false);
+#else
+					GetObjectsWithPackage(Package, ObjectsInPackage, EGetObjectsFlags::None);
+#endif
 					for (UObject* Obj : ObjectsInPackage)
 					{
 						if (Obj != nullptr && Obj->IsAsset())
