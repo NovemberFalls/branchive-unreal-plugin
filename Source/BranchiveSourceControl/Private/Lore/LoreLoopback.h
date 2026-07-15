@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Engine-independent, one-shot loopback HTTP listener for the Branchive OAuth
 // callback (docs/INTEGRATIONS-AUTH-PKCE.md §2.1 / §2.4). Pure C++ + the platform

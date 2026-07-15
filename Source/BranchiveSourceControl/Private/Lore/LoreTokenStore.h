@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Engine-independent token-at-rest INTERFACE (docs/INTEGRATIONS-AUTH-PKCE.md §2.4).
 // The Branchive Bearer is a secret; it is NEVER logged and never written to a

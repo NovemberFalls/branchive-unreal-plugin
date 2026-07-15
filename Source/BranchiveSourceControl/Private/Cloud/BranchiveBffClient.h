@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Synchronous, server-side HTTP client for the Branchive BFF auth endpoints
 // (docs/INTEGRATIONS-AUTH-PKCE.md §3.x). Built on UE's HTTP module. Deliberately a

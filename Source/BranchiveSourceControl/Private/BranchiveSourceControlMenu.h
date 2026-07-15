@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Surfaces the (already-wired, prior-tier) whole-side conflict operations in the
 // Content Browser asset context menu (contract §4.19/§4.20): for a CONFLICTED asset

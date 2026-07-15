@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Thin UE wrapper that spawns the `lore` CLI as a child process — NEVER a shell
 // (contract §3.1). v1 uses spawn-per-op via FPlatformProcess::ExecProcess with

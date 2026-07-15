@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // ============================================================================
 // AUTH SEAM (Wave-2b) — DOCUMENTED STUB. No listener is opened this run.

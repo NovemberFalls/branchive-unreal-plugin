@@ -1,4 +1,4 @@
-// Copyright Branchive. Engine-independent parsers — see LoreParse.h.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 #include "LoreParse.h"
 
 #include <cctype>

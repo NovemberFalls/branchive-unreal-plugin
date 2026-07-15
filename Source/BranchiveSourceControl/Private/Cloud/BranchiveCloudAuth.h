@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Branchive Cloud sign-in coordinator (docs/INTEGRATIONS-AUTH-PKCE.md §0, §2.4,
 // §3.4, §4). One Bearer/identity per running editor, shared across the project —

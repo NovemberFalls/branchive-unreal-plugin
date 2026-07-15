@@ -1,4 +1,4 @@
-// Copyright Branchive. Licensed for the Branchive Unreal source control plugin.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Engine-independent parsers for the `lore` CLI's textual output.
 //

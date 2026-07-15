@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // FBranchiveSourceControlRevision — one entry in a file's revision history
 // (contract §4.12). Populates the Content Browser's "History" panel and drives

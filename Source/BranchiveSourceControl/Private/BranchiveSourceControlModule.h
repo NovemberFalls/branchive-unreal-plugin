@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Branchive source control plugin for Unreal Engine 5 — wraps the `lore` CLI
 // behind ISourceControlProvider so "Branchive" appears in the Revision Control

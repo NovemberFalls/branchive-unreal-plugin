@@ -1,4 +1,4 @@
-// Copyright Branchive. See LoreCli.h.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 #include "LoreCli.h"
 
 #include "BranchiveSourceControlLog.h"

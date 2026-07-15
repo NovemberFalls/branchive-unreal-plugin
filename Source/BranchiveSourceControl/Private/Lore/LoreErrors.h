@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Engine-independent classification of `lore` CLI failures, per
 // INTEGRATIONS-CONTRACT.md v2.0.0 §7 (error taxonomy) and §3.6 (why exit code

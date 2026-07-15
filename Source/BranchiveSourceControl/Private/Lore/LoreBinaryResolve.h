@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Pure, dependency-free predicate shared VERBATIM by the UE module (Lore/LoreCli.cpp)
 // and the standalone auth test (Tests/standalone/auth_test.cpp). Header-only so it needs

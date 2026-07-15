@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Engine-independent PKCE S256 primitives (RFC 7636) for Branchive Cloud
 // sign-in (docs/INTEGRATIONS-AUTH-PKCE.md §2.4, §0). Pure C++/std — NO Unreal

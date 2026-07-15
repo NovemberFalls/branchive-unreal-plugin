@@ -1,4 +1,4 @@
-// Copyright Branchive. Engine-independent error taxonomy — see LoreErrors.h.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 #include "LoreErrors.h"
 #include "LoreParse.h" // Trim / StartsWithNoCase / SplitLines
 

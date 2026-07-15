@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Engine-independent workspace identity-pin primitives (docs/INTEGRATIONS-AUTH-PKCE.md
 // §4.2/§4.3). Pure C++/std — the exact TU the UE module ships is also compiled +

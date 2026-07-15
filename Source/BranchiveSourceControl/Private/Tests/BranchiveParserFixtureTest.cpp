@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // In-editor automation test for the engine-independent Lore parsers. Runs the
 // SAME LoreParse/LoreErrors code the provider uses, over byte-faithful copies of

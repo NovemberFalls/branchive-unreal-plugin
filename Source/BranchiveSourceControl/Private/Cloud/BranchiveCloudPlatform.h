@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Per-platform security primitives for Branchive Cloud sign-in (auth spec §2.4):
 //   * BranchiveCryptoRandomBytes — crypto-strong RNG for the PKCE verifier

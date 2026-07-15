@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 #include "SBranchiveSourceControlSettings.h"
 
 #include "BranchiveSourceControlModule.h"

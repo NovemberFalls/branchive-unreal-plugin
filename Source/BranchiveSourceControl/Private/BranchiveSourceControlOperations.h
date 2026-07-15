@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // One worker per source-control operation. The provider dispatches to these by
 // operation name (contract §5.3 mapping):
