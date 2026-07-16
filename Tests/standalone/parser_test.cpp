@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Standalone fixture test for the engine-independent Lore CLI parsers. Compiles
 // WITHOUT Unreal Engine, against the exact same LoreParse.cpp / LoreErrors.cpp

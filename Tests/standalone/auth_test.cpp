@@ -1,4 +1,4 @@
-// Copyright Branchive.
+// Copyright 2026 Bits, LLC. All Rights Reserved.
 //
 // Standalone unit test for the engine-independent Branchive Cloud sign-in core
 // (docs/INTEGRATIONS-AUTH-PKCE.md §2.4). Compiles WITHOUT Unreal Engine, against
