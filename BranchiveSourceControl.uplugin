@@ -18,7 +18,7 @@
 		{
 			"Name": "BranchiveSourceControl",
 			"Type": "UncookedOnly",
-			"LoadingPhase": "EarliestPossible",
+			"LoadingPhase": "Default",
 			"PlatformAllowList": [
 				"Win64"
 			]
