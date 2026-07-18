@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 3,
-	"VersionName": "0.3.8",
+	"VersionName": "0.3.9",
 	"FriendlyName": "Branchive",
 	"Description": "Branchive revision control for Unreal Engine 5 \u2014 wraps the 'lore' CLI (commit/push/pull with server-enforced per-file locking, plus revision history, diff-against-revision, ours/theirs conflict resolution, and Branchive Cloud PKCE sign-in). Implements Branchive integrations contract 2.0.0.",
 	"Category": "Source Control",

@@ -201,6 +201,13 @@ namespace
 
 		// Lock query, scoped to the human branch name (contract §4.17 Rule 1).
 		std::vector<BranchiveLore::FLock> Locks;
+		// The CLI's OWN identity, surfaced by the same `lock query --json` stream as an
+		// "authUserInfo" event (v0.3.9): lets own-vs-other resolve by SERVER TRUTH
+		// (lock.owner == my usr_ id) instead of the per-session memory that made a
+		// user's own leftover lock from a previous editor session read as someone
+		// else's ("GA_Primary keeps locking on us", live 2026-07-18). Empty on
+		// auth-less servers — the session-set fallback below still covers those.
+		FString SelfUserId;
 		{
 			TArray<FString> LockArgs = { TEXT("lock"), TEXT("query"), TEXT("--json") };
 			if (!OutBranch.IsEmpty())
@@ -213,6 +220,11 @@ namespace
 			if (!LockRes.bSpawnFailed && LockRes.ReturnCode == 0)
 			{
 				Locks = BranchiveLore::ParseLocksJson(ToU8(LockRes.StdOut));
+				const BranchiveLore::FAuthUserInfo Self = BranchiveLore::ParseAuthUserInfo(ToU8(LockRes.StdOut));
+				if (Self.bFound)
+				{
+					SelfUserId = ToF(Self.UserId);
+				}
 			}
 		}
 
@@ -244,7 +256,13 @@ namespace
 
 			if (const FString* Owner = LockOwnerByRel.Find(Rel))
 			{
-				if (SessionLocked.Contains(Abs))
+				// Own-vs-other by SERVER TRUTH first (owner id == my usr_ id from the
+				// same query's authUserInfo), session memory second (auth-less servers
+				// surface no identity — the pre-0.3.9 behavior is the fallback there).
+				// This is what makes a leftover own lock from a PREVIOUS editor session
+				// finally read as "checked out by me" instead of a foreign lock.
+				const bool bOwnByServer = !SelfUserId.IsEmpty() && *Owner == SelfUserId;
+				if (bOwnByServer || SessionLocked.Contains(Abs))
 				{
 					RS.bLockedBySelf = true;
 				}
@@ -583,12 +601,70 @@ bool FBranchiveCheckInWorker::Execute(FBranchiveSourceControlCommand& Command)
 	MaybeEnsureCloudAuth(Command);
 	FLoreCli Cli(Command.PathToLoreBinary, Command.PathToRepositoryRoot);
 
+	// ---- 0a. case-only rename guard (v0.3.9) --------------------------------
+	// The lore CLI cannot represent Windows case-only renames safely: `stage`
+	// hard-fails on them as moves, and one that slips through as a delete+add
+	// pair produces a revision whose server-materialized state BREAKS
+	// `revision history` in every clone that pulls it (live 2026-07-18: rev
+	// "15. Activate Abilities by Tags" permanently poisoned the web commit
+	// graph). Refuse the check-in up front — two distinct submit paths that are
+	// case-insensitively equal can only be that pattern.
+	{
+		TMap<FString, FString> LowerToOriginal;
+		for (const FString& F : Command.Files)
+		{
+			const FString LowerF = F.ToLower();
+			if (const FString* Prev = LowerToOriginal.Find(LowerF))
+			{
+				if (*Prev != F)
+				{
+					Command.ErrorMessages.Add(FString::Printf(
+						TEXT("This check-in renames a file or folder only by letter case (\"%s\" vs \"%s\"), which Lore cannot represent safely yet. Rename via an intermediate name instead (Name -> NameTmp, check in, then NameTmp -> FinalName)."),
+						**Prev, *F));
+					return false; // nothing staged, locks intact
+				}
+			}
+			else
+			{
+				LowerToOriginal.Add(LowerF, F);
+			}
+		}
+	}
+
 	// ---- 1. stage the exact files being checked in (explicit list, §5.3) ----
 	{
 		TArray<FString> StageArgs = { TEXT("stage") };
 		if (Command.Files.Num() > 0)
 		{
-			StageArgs.Append(Command.Files);
+			// Stale-path filter (v0.3.9): after an in-editor folder rename, UE's
+			// cached states can still submit paths whose PARENT DIRECTORY no longer
+			// exists — `lore stage` hard-fails on those with "[Error] Invalid path"
+			// (exit 255) and the whole check-in died with a generic message (live
+			// 2026-07-18). A missing FILE in an existing directory is fine (that is
+			// how deletes stage — benign no-op if untracked); only a vanished parent
+			// is unstageable, so drop exactly those, loudly.
+			TArray<FString> Stageable;
+			for (const FString& F : Command.Files)
+			{
+				if (FPaths::DirectoryExists(FPaths::GetPath(F)))
+				{
+					Stageable.Add(F);
+				}
+				else
+				{
+					Command.InfoMessages.Add(FString::Printf(
+						TEXT("Skipped \"%s\" — its folder no longer exists on disk (moved or renamed). Refresh the view to pick up the new location."), *F));
+				}
+			}
+			if (Stageable.Num() == 0)
+			{
+				Command.InfoMessages.Add(TEXT("Nothing to check in — every selected file's folder has moved. Refresh and retry."));
+				FString Error;
+				ComputeStates(Cli, Command.PathToRepositoryRoot, Command.Files,
+					Command.SessionLockedFiles, States, OutBranch, bOutIsCurrent, Error);
+				return true; // benign no-op, same posture as the empty-commit path below
+			}
+			StageArgs.Append(Stageable);
 		}
 		else
 		{
@@ -661,13 +737,37 @@ bool FBranchiveCheckInWorker::Execute(FBranchiveSourceControlCommand& Command)
 	}
 
 	// ---- 4. release locks on EXACTLY the files just committed (§5.3) --------
-	// Only files we actually hold (intersection with our session locks) —
-	// never blanket-release the user's other, unrelated checkouts.
+	// Files we actually hold: our session's locks PLUS (v0.3.9) any lock on a
+	// committed file whose server-side owner is US (authUserInfo id from `lock
+	// query --json`) — a lock carried over from a PREVIOUS editor session was
+	// invisible to the session-set and silently survived every check-in, which
+	// is how "GA_Primary keeps locking on us" happened. Still never touches
+	// locks on files OUTSIDE this check-in, and never other users' locks.
 	{
+		TSet<FString> ServerOwnedRel;
+		{
+			const FLoreCliResult LockRes = Cli.Run({ TEXT("lock"), TEXT("query"), TEXT("--json") });
+			if (!LockRes.bSpawnFailed && LockRes.ReturnCode == 0)
+			{
+				const BranchiveLore::FAuthUserInfo Self = BranchiveLore::ParseAuthUserInfo(ToU8(LockRes.StdOut));
+				if (Self.bFound && !Self.UserId.empty())
+				{
+					for (const BranchiveLore::FLock& L : BranchiveLore::ParseLocksJson(ToU8(LockRes.StdOut)))
+					{
+						if (L.Owner == Self.UserId)
+						{
+							ServerOwnedRel.Add(NormalizeRel(ToF(L.Path)));
+						}
+					}
+				}
+			}
+		}
 		TArray<FString> ToRelease;
 		for (const FString& F : Command.Files)
 		{
-			if (Command.SessionLockedFiles.Contains(F))
+			const bool bSessionHeld = Command.SessionLockedFiles.Contains(F);
+			const bool bServerHeld = ServerOwnedRel.Contains(NormalizeRel(MakeRepoRelative(F, Command.PathToRepositoryRoot)));
+			if (bSessionHeld || bServerHeld)
 			{
 				ToRelease.Add(F);
 			}

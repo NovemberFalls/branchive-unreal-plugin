@@ -420,16 +420,27 @@ namespace BranchiveLore
 			return false;
 		}
 
-		// PRIMARY: the stable user id. When both sides have one, it decides outright —
-		// a mismatch here is a definitive "different user", so we do NOT fall through to
-		// email. Ids come from the same server value, so an exact (byte) compare is right.
+		// PRIMARY: the stable user id — but ONLY when both sides carry the same id
+		// NAMESPACE (v0.3.9 fix). The CLI's authUserInfo.id is a lore "usr_…" id,
+		// while the BFF's /auth/me sub is a branchive_user_id from a DIFFERENT
+		// namespace — live 2026-07-18: every probe "mismatched" on that
+		// apples-vs-oranges compare, the email fallback below was never consulted,
+		// and every single op fired a doomed background /auth/lore-token mint.
+		// Ids decide outright only when both are lore-namespace ids; otherwise they
+		// are simply not comparable and email is the real join key.
 		if (!Ambient.UserId.empty() && !SignedInUserId.empty())
 		{
-			return Ambient.UserId == SignedInUserId;
+			const bool bBothLoreIds =
+				Ambient.UserId.rfind("usr_", 0) == 0 && SignedInUserId.rfind("usr_", 0) == 0;
+			if (bBothLoreIds)
+			{
+				return Ambient.UserId == SignedInUserId;
+			}
+			// different namespaces — fall through to the email compare below
 		}
 
-		// FALLBACK: email (case-insensitive), only when an id is unavailable on either
-		// side (e.g. an older CLI/BFF that doesn't surface the id).
+		// FALLBACK: email (case-insensitive) — when an id is unavailable on either
+		// side, or the two ids live in different namespaces (BFF sub vs lore usr_).
 		if (!Ambient.Email.empty() && !SignedInEmail.empty())
 		{
 			return EqualsNoCase(Ambient.Email, SignedInEmail);

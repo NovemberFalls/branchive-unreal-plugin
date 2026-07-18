@@ -75,6 +75,11 @@ namespace BranchiveLore
 			if (T.rfind("error: ", 0) == 0) return EErrorClass::CliArgumentError;
 		}
 
+		// Stale/renamed path handed to `stage` (exit 255, stage.rs "Invalid path" —
+		// live 2026-07-18: an in-editor folder rename left UE submitting old paths
+		// and the check-in died as a bare "The operation failed."). v0.3.9.
+		if (ContainsNoCase(Text, "invalid path")) return EErrorClass::InvalidPath;
+
 		// Generic "not found" for a branch-scoped op (exit 13 typically).
 		if (ContainsNoCase(Text, "not found")) return EErrorClass::BranchNotFound;
 
@@ -131,6 +136,7 @@ namespace BranchiveLore
 		case EErrorClass::EmptyCommit:                  return "Nothing to check in.";
 		case EErrorClass::NotAuthorized:                return "You are not authorized to push here. This branch may be protected — open a review instead.";
 		case EErrorClass::StoreOverloaded:              return "The store is busy (large push). This will retry automatically.";
+		case EErrorClass::InvalidPath:                  return "A file in this operation no longer exists at its recorded path (it may have been moved or renamed). Refresh the view and retry.";
 		case EErrorClass::Unknown:                      return "The operation failed.";
 		}
 		return "The operation failed.";

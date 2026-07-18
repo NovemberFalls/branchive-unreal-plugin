@@ -28,6 +28,7 @@ namespace BranchiveLore
 		EmptyCommit,                   // exit 21, "Nothing staged for commit"
 		NotAuthorized,                 // "not authorized to access repository" (maybe protected)
 		StoreOverloaded,               // "slow down" / "store overloaded" (transient)
+		InvalidPath,                   // exit 255, "[Error] Invalid path" (stage.rs — stale/renamed path)
 		Unknown                        // non-zero, unclassified
 	};
 
