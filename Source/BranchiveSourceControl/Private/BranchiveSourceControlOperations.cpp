@@ -687,7 +687,7 @@ bool FBranchiveCheckInWorker::Execute(FBranchiveSourceControlCommand& Command)
 	// surfaces in every clone's `revision history` (round-trip live-verified).
 	// BEST-EFFORT: a failure here must NEVER fail or block the check-in.
 	{
-		const FLoreCliResult TagRes = Cli.Run({ TEXT("revision"), TEXT("metadata"), TEXT("set"), TEXT("client"), TEXT("unreal/0.3.9") });
+		const FLoreCliResult TagRes = Cli.Run({ TEXT("revision"), TEXT("metadata"), TEXT("set"), TEXT("client"), TEXT("unreal/0.3.10") });
 		(void)TagRes; // untagged commit is fine
 	}
 
