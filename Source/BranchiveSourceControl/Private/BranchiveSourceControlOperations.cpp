@@ -681,6 +681,16 @@ bool FBranchiveCheckInWorker::Execute(FBranchiveSourceControlCommand& Command)
 		}
 	}
 
+	// ---- 1.5 client-origin tag (v0.3.9, 2026-07-19) -------------------------
+	// Tag the STAGED revision with its originating client via
+	// `revision metadata set client unreal/<ver>` — rides the commit+push and
+	// surfaces in every clone's `revision history` (round-trip live-verified).
+	// BEST-EFFORT: a failure here must NEVER fail or block the check-in.
+	{
+		const FLoreCliResult TagRes = Cli.Run({ TEXT("revision"), TEXT("metadata"), TEXT("set"), TEXT("client"), TEXT("unreal/0.3.9") });
+		(void)TagRes; // untagged commit is fine
+	}
+
 	// ---- 2. commit (message is POSITIONAL; --non-interactive, §4.4) ---------
 	FString Description = TEXT("Checked in from Unreal Editor");
 	{
